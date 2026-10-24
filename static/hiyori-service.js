@@ -28,6 +28,7 @@
       affinity: game.affinity, relationship: game.relationship || '気になる存在',
       axes: game.axes || null, lastUpdate: game.lastUpdate || null,
       ending: game.ending || null, turns: game.turns,
+      previewRomance: game.previewRomance || null,
       messages: game.messages.map((item, index) => ({
         id: item.id || 'message-' + index, role: item.role, text: item.content,
         createdAt: item.createdAt || new Date().toISOString(),
@@ -117,7 +118,8 @@
         const result = await request('/api/game/chat', {
           method: 'POST', signal,
           body: {characterId: Number(before.partnerId), did: user.did,
-                 message: payload.text, clientMessageId: payload.clientMessageId},
+                 message: payload.text, clientMessageId: payload.clientMessageId,
+                 ...(payload.confession ? {confession: true} : {})},
         });
         return {game: asSnapshot(result.game, before.partnerId),
                 dmMessages: result.dmMessages || [], convoId: result.convoId,

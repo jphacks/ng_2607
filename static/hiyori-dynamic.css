@@ -24,3 +24,14 @@
 @media(prefers-reduced-motion:reduce){.update-card{transform:none!important}.secret-card p{clip-path:none!important}}
 
 .secret-card summary:after{display:none}.secret-lock{width:20px;height:20px;vertical-align:middle;fill:none;stroke:var(--event-rose);stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}.lock-shackle{transform:rotate(var(--key-turn,0deg));transform-origin:7px 11px}
+
+/* One large heart carries the complete change in affection. */
+.flying-heart{width:112px;height:101px;font-size:initial;-webkit-text-stroke:0;display:block;color:var(--event-heart)}
+.flying-heart svg{display:block;width:100%;height:100%;overflow:visible;fill:currentColor;stroke:#fff;stroke-width:2;stroke-linejoin:round}
+.flying-heart b{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding-bottom:10px;color:#fff;font:700 30px/1 Arial,sans-serif;text-shadow:0 1px 3px #56233a40;font-variant-numeric:tabular-nums}
+.affection-event.decreasing{--event-rose:#6387B3;--event-heart:#7D9FCA;--event-soft:#DCEAF5;--event-ink:#3D608A;--event-night:#1E2B3E}
+.decreasing .flying-heart{filter:drop-shadow(0 0 20px #7d9fca73)}
+.decreasing .event-meter progress::-webkit-progress-bar{background:#C8D9EB}
+.decreasing .event-meter progress::-webkit-progress-value{background:var(--event-heart)}
+.decreasing .event-meter progress::-moz-progress-bar{background:var(--event-heart)}
+@media(max-width:700px){.flying-heart{width:96px;height:87px}.flying-heart b{font-size:26px;padding-bottom:9px}.event-caption h2{margin-top:24px}}

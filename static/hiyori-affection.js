@@ -11,8 +11,12 @@ class AffectionPlayer {
   }
   play(from,to,relationship,{signal,onFrame=()=>{}}={}) {
     this.cancel();
-    if(to<=from)return Promise.resolve();
+    if(to===from)return Promise.resolve();
     this.from=from;this.to=to;
+    this.decreasing=to<from;
+    this.layer.classList.toggle('decreasing',this.decreasing);
+    this.layer.setAttribute('aria-label',this.decreasing?'好感度が下がりました':'好感度が上がりました');
+    this.layer.querySelector('.event-caption h2').textContent=this.decreasing?'気持ちが、少しすれ違った。':'気持ちが、少し近づいた。';
     this.reduced=matchMedia('(prefers-reduced-motion: reduce)').matches;
     this.duration=AffectionEngine.timeline(AFFECTION_CONFIG,from,to,{reduced:this.reduced}).duration;
     this.label=relationship;this.onFrame=onFrame;this.focusBefore=document.activeElement;
@@ -37,19 +41,24 @@ class AffectionPlayer {
     const bounds=this.messages.getBoundingClientRect(),bar=meter.querySelector('progress').getBoundingClientRect();
     const cx=bounds.left+bounds.width/2,cy=bounds.top+bounds.height*.45;
     const caption=layer.querySelector('.event-caption');Object.assign(caption.style,{left:`${bounds.left+16}px`,width:`${bounds.width-32}px`,top:`${cy+56}px`,opacity:Math.min(1,time/500,(s.eventEnd-time)/600)});
-    caption.querySelector('p').textContent=`${s.from} → ${s.to}　好感度 +${s.count}`;
+    caption.querySelector('p').textContent=`${s.from} → ${s.to}　好感度 ${s.delta>0?'+':''}${s.delta}`;
     const hearts=layer.querySelector('.event-hearts');hearts.replaceChildren();
     for(const h of s.hearts.filter(h=>h.visible)) {
-      const el=document.createElement('span');el.className='flying-heart';el.textContent='♥';
-      const sx=cx+(h.slot-(Math.min(AFFECTION_CONFIG.capacity,s.count)-1)/2)*(mobile?44:56),sy=cy;
-      const ex=bar.left+bar.width*(s.from+h.index+1)/100,ey=bar.top+bar.height/2,p=h.flight,q=1-p;
+      const el=document.createElement('span');el.className='flying-heart';
+      el.innerHTML='<svg viewBox="0 0 100 90" aria-hidden="true"><path d="M50 84C42 77 6 53 6 29C6 5 36 0 50 21C64 0 94 5 94 29C94 53 58 77 50 84Z"/></svg><b></b>';
+      el.querySelector('b').textContent=`${s.delta>0?'+':''}${s.delta}`;
+      const sx=cx,sy=cy;
+      const ex=bar.left+bar.width*s.to/100,ey=bar.top+bar.height/2,p=h.flight,q=1-p;
       const vanish=Math.max(0,(p-(1-180/AFFECTION_CONFIG.flight))/(180/AFFECTION_CONFIG.flight));
       const scale=h.appear<.7?.6+.52*h.appear/.7:1.12-.12*(h.appear-.7)/.3;
-      Object.assign(el.style,{left:`${q*q*sx+2*q*p*(sx+(ex-sx)*.25)+p*p*ex}px`,top:`${q*q*sy+2*q*p*(Math.min(sy,ey)-90)+p*p*ey}px`,transform:`translate(-50%,-50%) scale(${scale*(1-.75*vanish)})`,opacity:Math.min(1,h.appear*2)*(1-vanish)});hearts.append(el);
+      const x=this.decreasing?sx+Math.sin(p*Math.PI)*12:q*q*sx+2*q*p*(sx+(ex-sx)*.25)+p*p*ex;
+      const y=this.decreasing?sy+110*p*p:q*q*sy+2*q*p*(Math.min(sy,ey)-90)+p*p*ey;
+      const fade=this.decreasing?p:vanish;
+      Object.assign(el.style,{left:`${x}px`,top:`${y}px`,transform:`translate(-50%,-50%) scale(${scale*(1-(this.decreasing?.35:.75)*fade)})${this.decreasing?` rotate(${-8*p}deg)`:''}`,opacity:Math.min(1,h.appear*2)*(1-fade)});hearts.append(el);
     }
     const arrival=time-s.launch-AFFECTION_CONFIG.flight;
-    const pulse=arrival>=0&&arrival<AFFECTION_CONFIG.launchGap*s.count?Math.max(0,1-(arrival%AFFECTION_CONFIG.launchGap)/AFFECTION_CONFIG.bar):0;
-    meter.style.transform=`scale(${1+.03*pulse})`;meter.style.boxShadow=`0 0 ${24*pulse}px #ff5c9373`;
+    const pulse=arrival>=0&&arrival<AFFECTION_CONFIG.bar?1-arrival/AFFECTION_CONFIG.bar:0;
+    meter.style.transform=`scale(${1+(this.decreasing?-.02:.03)*pulse})`;meter.style.boxShadow=`0 0 ${24*pulse}px ${this.decreasing?'#7d9fca73':'#ff5c9373'}`;
   }
   finish() {if(!this.resolve)return;this.paint(this.duration);this.cleanup(false);}
   cancel() {if(this.resolve)this.cleanup(true);}

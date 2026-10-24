@@ -154,3 +154,20 @@
 .partner-lock-progress::-webkit-progress-bar{background:#f0e7e9}
 .partner-lock-progress::-webkit-progress-value{background:var(--pink)}
 .partner-lock-progress::-moz-progress-bar{background:var(--pink)}
+
+/* Secret opening: diagonal peel, warm flash, then the revealed text. */
+.ui-page .secret-card{position:relative;isolation:isolate;transform-origin:center}
+.ui-page .secret-card.secret-revealing{border-color:#fff;z-index:3}
+.ui-page .secret-card.secret-revealing::before{content:'';position:absolute;inset:-2px;border-radius:inherit;box-shadow:0 0 0 100vmax #111522b8;z-index:-1;pointer-events:none}
+#profile:has(.secret-revealing)::backdrop{background:#111522ba;backdrop-filter:blur(5px)}
+.secret-reveal-effects{position:absolute;inset:0;border-radius:inherit;overflow:hidden;pointer-events:none;z-index:3}
+.secret-reveal-effects>span{position:absolute;inset:0;pointer-events:none}
+.secret-reveal-seal{background:linear-gradient(120deg,#ae777a 0%,#dba99f 24%,#f3cfc0 43%,#e8b6ad 56%,#c38d89 78%,#b57c80 100%);box-shadow:inset 0 0 24px #ffe3d680}
+.secret-reveal-effects>.secret-reveal-sweep{display:block;inset:-30% auto -30% -45%;width:35%;height:160%;background:linear-gradient(90deg,transparent,#ffffff60 15%,#ffffffd9 30%,#fff 42%,#fff 58%,#ffffffd9 70%,#ffffff60 85%,transparent);transform:skewX(-20deg);filter:drop-shadow(0 0 14px #fff);will-change:left;z-index:2}
+.secret-reveal-burst{background:radial-gradient(ellipse at 55% 50%,#fff 0%,#fff 55%,#f1f6ff 85%,#e4edff 100%)}
+.secret-reveal-effects>.secret-reveal-sparks{inset:8px 12px;opacity:0;filter:drop-shadow(0 0 5px #fff) drop-shadow(0 0 12px #e6efff)}
+.secret-reveal-sparks i{position:absolute;display:block;width:28px;height:28px;background:#fff;clip-path:polygon(50% 0,62% 38%,100% 50%,62% 62%,50% 100%,38% 62%,0 50%,38% 38%)}
+.secret-reveal-sparks i:nth-child(1){left:3%;top:12%}
+.secret-reveal-sparks i:nth-child(2){right:5%;top:6%;width:34px;height:34px}
+.secret-reveal-sparks i:nth-child(3){left:58%;bottom:4%;width:22px;height:22px}
+@media(prefers-reduced-motion:reduce){.secret-reveal-effects{display:none}.ui-page .secret-card{transform:none!important}}

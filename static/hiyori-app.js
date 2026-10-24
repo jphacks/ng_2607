@@ -61,6 +61,7 @@
     if (snapshot()?.ending) ending.textContent = snapshot().ending;
     // The ending panel shrinks the message area; keep the last reply in view.
     if (appeared) messages.scrollTop = messages.scrollHeight;
+    globalThis.UIRomance?.render({snapshot:snapshot(), selected, busy:busy||loading, input, send, typing});
   }
   function resizeInput() {
     input.style.height = 'auto';
@@ -259,23 +260,55 @@
     badge.textContent = `新しいヒミツ · ${unread}件`;
     mobileBadge.textContent = `NEW ${unread}`;
   }
-  async function openSecret(secret, card) {
+  async function openSecret(secret, card, {preview = false} = {}) {
     if (!secret.unlocked || secret.read || card.dataset.reading === 'true') return;
     const token = epoch, version = revealVersion;
     card.dataset.reading = 'true';
-    const body = card.querySelector('p');
+    const effects = el('span', 'secret-reveal-effects');
+    effects.setAttribute('aria-hidden', 'true');
+    effects.innerHTML = '<span class="secret-reveal-seal"></span><span class="secret-reveal-sweep"></span><span class="secret-reveal-burst"></span><span class="secret-reveal-sparks"><i></i><i></i><i></i></span>';
+    const animations = [];
     try {
       if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
-        const animation = body.animate([
-          {opacity: 0, clipPath: 'inset(0 100% 0 0)'},
-          {opacity: 0, clipPath: 'inset(0 100% 0 0)', offset: 600 / 1400},
-          {opacity: 1, clipPath: 'inset(0 0% 0 0)'},
-        ], {duration: 1400, fill: 'backwards'});
-        revealAnimations.add(animation);
-        await animation.finished;
-        revealAnimations.delete(animation);
+        card.classList.add('secret-revealing');
+        card.append(effects);
+        const seal = effects.querySelector('.secret-reveal-seal');
+        const sweep = effects.querySelector('.secret-reveal-sweep');
+        const burst = effects.querySelector('.secret-reveal-burst');
+        const sparks = effects.querySelector('.secret-reveal-sparks');
+        sweep.style.opacity = burst.style.opacity = sparks.style.opacity = '0';
+        const animate = (node, frames, duration) => {
+          if (token !== epoch || version !== revealVersion || !profile.open) {
+            throw new DOMException('Reveal cancelled', 'AbortError');
+          }
+          const animation = node.animate(frames, {duration, fill: 'forwards', easing: 'ease-in-out'});
+          animations.push(animation); revealAnimations.add(animation);
+          return animation.finished;
+        };
+        // The peel and its leading light are one stage. Every later stage waits.
+        const peel = animate(seal, [
+          {opacity: 1, clipPath: 'polygon(-30% 0,100% 0,100% 100%,-30% 100%)'},
+          {opacity: 1, clipPath: 'polygon(115% 0,100% 0,100% 100%,85% 100%)', offset: .88},
+          {opacity: 0, clipPath: 'polygon(130% 0,100% 0,100% 100%,100% 100%)'},
+        ], 1600);
+        await Promise.all([peel, animate(sweep, [
+          {left: '-45%', opacity: 0},
+          {left: '-30%', opacity: 1, offset: .08},
+          {left: '100%', opacity: 1, offset: .92},
+          {left: '115%', opacity: 0},
+        ], 1600), animate(card, [
+          {transform: 'scale(1)'},
+          {transform: 'scale(1.035)', offset: .45},
+          {transform: 'scale(1)'},
+        ], 1600)]);
+        await animate(sparks, [
+          {opacity: 0, transform: 'scale(.7)'},
+          {opacity: 1, transform: 'scale(1)', offset: .35},
+          {opacity: 0, transform: 'scale(1.18)'},
+        ], 850);
       }
       if (token !== epoch || version !== revealVersion || !profile.open) return;
+      if (preview) return;
       readAbort = new AbortController();
       await api.markRead(snapshot(), secret.id, readAbort.signal);
       if (token !== epoch || version !== revealVersion) return;
@@ -291,7 +324,11 @@
         retry.onclick = () => { retry.remove(); openSecret(secret, card); };
         card.append(retry);
       }
-    } finally { card.dataset.reading = 'false'; }
+    } finally {
+      for (const animation of animations) { revealAnimations.delete(animation); animation.cancel(); }
+      effects.remove(); card.classList.remove('secret-revealing');
+      card.dataset.reading = 'false';
+    }
   }
   function renderSecrets() {
     secretsSection.hidden = !snapshot().secrets.length;
@@ -304,7 +341,7 @@
         el('small', null, secret.unlocked ? '公開済み' : `好感度${secret.requiredAffinity}で公開`),
         el('p', null, secret.unlocked ? secret.content : 'もう少し仲良くなると、知ることができます。'),
       );
-      card.querySelector('summary').onclick = event => { if (!secret.unlocked) event.preventDefault(); };
+      card.querySelector('summary').onclick = event => { if (!secret.unlocked || card.dataset.reading === 'true') event.preventDefault(); };
       card.addEventListener('toggle', () => { if (card.open) openSecret(secret, card); });
       secretList.append(card);
     }
@@ -424,7 +461,8 @@
     renderMessages({force: true, animate: true}); setControls();
     mainAbort = new AbortController();
     try {
-      const result = await api.send(before, {clientMessageId: pending.clientMessageId, text}, mainAbort.signal);
+      const result = await api.send(before, {clientMessageId: pending.clientMessageId, text,
+        confession: globalThis.UIRomance?.confessing || false}, mainAbort.signal);
       if (token !== epoch) return;
       const data = result.game;
       session.snapshot = data; session.pending = null;
@@ -439,7 +477,10 @@
       if (token !== epoch) return;
       renderAffinity(); renderAxes(); renderBadge();
       const unlocked = data.secrets.filter(secret => secret.unlocked && !before.secrets.find(old => old.id === secret.id)?.unlocked);
-      if (unlocked.length) {
+      if (data.previewRomance?.status === 'lovers' && before.previewRomance?.status !== 'lovers') {
+        await globalThis.UIRomance?.celebrate(mainAbort.signal);
+        if (token !== epoch) return;
+      } else if (unlocked.length) {
         await new Promise(resolve => setTimeout(resolve, AFFECTION_CONFIG.popupGap));
         if (token !== epoch) return;
         showUpdate(unlocked);
@@ -503,6 +544,52 @@
     } catch (error) {
       if (error.name !== 'AbortError') { status.textContent = '相手を読み込めませんでした。'; showError(error.message, bootstrap); }
     }
+  }
+  // Available only when the preview server has loaded the romance preview.
+  if (globalThis.UIRomance) {
+    const ensurePreview = async () => {
+      if (busy || loading) throw new Error('演出・読み込みが終わってから試してください。');
+      if (!selected) {
+        const partner = partnerList.find(p => p.unlock.unlocked);
+        if (!partner) throw new Error('通常シナリオを選んでから試してください。');
+        await choose(partner.id);
+      }
+      if (!snapshot()) throw new Error('会話画面を読み込めませんでした。');
+    };
+    globalThis.UIEffects = {
+      async heart(delta) {
+        await ensurePreview();
+        if (profile.open) profile.close();
+        const token = epoch;
+        busy = true; setControls();
+        try {
+          await player.play(50, Math.max(0, Math.min(100, 50 + delta)), snapshot().relationship,
+            {onFrame: s => renderAffinity(s.affinity, s.visual)});
+        } finally {
+          if (token === epoch) { busy = false; renderAffinity(); setControls(); }
+        }
+      },
+      async secret() {
+        await ensurePreview();
+        openProfile();
+        const secret = {id: 'preview', title: '演出プレビューのヒミツ', unlocked: true, read: false,
+          content: '実は、あなたと話せる時間をいつも楽しみにしています。\nこれは演出確認用です。閲覧状態は変更しません。'};
+        const card = el('details', 'secret-card'); card.open = true;
+        card.append(el('summary', null, '◇ ' + secret.title), el('small', null, '演出プレビュー'), el('p', null, secret.content));
+        card.querySelector('summary').onclick = event => event.preventDefault();
+        secretsSection.hidden = false; secretList.replaceChildren(card);
+        card.scrollIntoView({block: 'center'});
+        const replay = el('button', 'read-retry', 'もう一度再生'); replay.type = 'button';
+        const run = async () => {
+          replay.disabled = true;
+          try { await openSecret(secret, card, {preview: true}); }
+          finally { replay.disabled = false; }
+        };
+        replay.onclick = run;
+        await run(); card.after(replay);
+      },
+      async ending() { await ensurePreview(); if (profile.open) profile.close(); await globalThis.UIRomance.celebrate(); },
+    };
   }
   setControls();
   bootstrap();
