@@ -69,11 +69,13 @@ class AutomationTest(unittest.TestCase):
         self.patches = [patch.object(server, "DATA", Path(self.folder.name)),
                         patch.object(server, "DB_PATH", Path(self.folder.name) / "game.sqlite3")]
         self.patches.append(patch.object(server, "character_posts", return_value=[]))
+        self.patches.append(patch.object(server, "BASE_IMAGE_DIR", Path(self.folder.name) / "base_images"))
         for item in self.patches:
             item.start()
         server.init_db()
         server.RUNNER.state.clear()
         server.RUNNER.status.clear()
+        server.RUNNER.story_previews.clear()
         with server.database() as db:
             db.execute("UPDATE characters SET handle='char.test',at_did=?,oauth_did=?,oauth_owner=?,oauth_scope='atproto' WHERE id=1",
                        (CHAR_DID, CHAR_DID, VISITOR))
@@ -283,8 +285,9 @@ class AutomationTest(unittest.TestCase):
             target = server.automation_target(db, 1, VISITOR)
         prompts = []
 
-        def image(prompt):
+        def image(prompt, reference):
             prompts.append(prompt)
+            self.assertIsNone(reference)  # No base image: a photo without the character.
             return b"\xff\xd8jpeg"
         story = json.dumps({"caption": "いい天気", "image_prompt": "木漏れ日の遊歩道"}, ensure_ascii=False)
         with patch.object(server, "oauth_call", side_effect=self.bsky), patch.object(server, "call_ai", return_value=story), \
@@ -299,6 +302,64 @@ class AutomationTest(unittest.TestCase):
         self.assertIn(automation.IMAGE_STYLE, prompts[0])
         log = server.RUNNER.load_day(1, now.date())["story_log"]
         self.assertEqual([(item["time"], item["status"]) for item in log], [("11:50", "posted")])
+
+    def test_base_image_is_validated_and_used_as_the_reference(self):
+        png = b"\x89PNG\r\n\x1a\n" + b"0" * 100
+        status, data = invoke("do_POST", "/api/characters/1/base-image", {"image": "data:image/png;base64," + base64.b64encode(b"GIF89a").decode()})
+        self.assertEqual(status, 400)
+        status, _ = invoke("do_POST", "/api/characters/1/base-image", {"image": "data:image/png;base64," + base64.b64encode(png).decode()})
+        self.assertEqual(status, 200)
+        self.assertEqual(server.base_image(1), (png, "image/png"))
+        self.assertEqual(sorted(path.name for path in server.BASE_IMAGE_DIR.iterdir()), ["char.test.png"])  # Named after the handle.
+
+        self.save(auto_reply=False)
+        self.story_day(datetime.datetime.now())
+        story = json.dumps({"caption": "作業中", "image_prompt": "カフェでノートパソコンを開くわたし"}, ensure_ascii=False)
+        with patch.object(server, "call_ai", return_value=story), patch.object(server, "generate_image", return_value=b"img") as image:
+            status, data = invoke("do_POST", "/api/characters/1/automation/story-preview", {})
+        self.assertEqual(status, 200)
+        prompt, reference = image.call_args.args
+        self.assertEqual(reference, (png, "image/png"))
+        self.assertIn(automation.IMAGE_STYLE_WITH_BASE, prompt)
+        parts = {part["key"]: part for part in data["prompt"]}
+        self.assertEqual(parts["rules"]["content"], automation.STORY_RULES_WITH_BASE)
+        self.assertIn("ベース画像を参照", parts["image"]["label"])
+
+        status, _ = invoke("do_POST", "/api/characters/1/base-image/delete", {})
+        self.assertEqual(status, 200)
+        self.assertIsNone(server.base_image(1))
+
+    def test_base_image_can_be_dropped_into_the_folder(self):
+        server.BASE_IMAGE_DIR.mkdir()
+        jpeg = b"\xff\xd8\xff" + b"0" * 10
+        (server.BASE_IMAGE_DIR / "char.test.jpg").write_bytes(jpeg)
+        self.assertEqual(server.base_image(1), (jpeg, "image/jpeg"))
+        (server.BASE_IMAGE_DIR / "char.test.jpg").write_bytes(b"not an image")
+        self.assertIsNone(server.base_image(1))  # A broken file is ignored rather than sent.
+
+    def test_story_image_prompt_fills_the_situation_from_the_schedule(self):
+        template = "【画風】アニメ調\n【字幕】一言を入れる\n【今回のシチュエーション】\nおまかせ。"
+        prompt = automation.image_prompt("カフェで作業", True, template, "カフェきた〜", ["窓辺の光"])
+        self.assertTrue(prompt.startswith("【画風】アニメ調\n【字幕】一言を入れる\n【今回のシチュエーション】\nカフェで作業"))
+        self.assertNotIn("おまかせ", prompt)
+        self.assertIn("「カフェきた〜」", prompt)
+        self.assertIn("- 窓辺の光", prompt)
+        self.assertNotIn(automation.IMAGE_STYLE_WITH_BASE, prompt)  # The character's own style replaces the built-in one.
+        self.assertTrue(automation.image_prompt("散歩", False, "【画風】水彩").endswith("【今回のシチュエーション】\n散歩\n予定の場面・時間帯に合わせて描く。"))
+
+        status, data = self.save(auto_reply=False, story_image_prompt=template)
+        self.assertEqual((status, data["settings"]["story_image_prompt"]), (200, template))
+        now = datetime.datetime.now()
+        self.story_day(now)
+        server.RUNNER.append_log(1, now.date(), "story_log", [{"time": "09:00", "imagePrompt": "【画風】\n【今回のシチュエーション】\n朝の散歩\n予定の場面"}])
+        story = json.dumps({"caption": "作業中", "image_prompt": "公園のベンチでスケッチ"}, ensure_ascii=False)
+        with patch.object(server, "call_ai", return_value=story), patch.object(server, "generate_image", return_value=b"img") as image:
+            status, data = invoke("do_POST", "/api/characters/1/automation/story-preview", {})
+        self.assertEqual(status, 200)
+        sent = image.call_args.args[0]
+        self.assertIn("公園のベンチでスケッチ", sent)
+        self.assertIn("- 朝の散歩", sent)  # Today's earlier scene, to vary the composition.
+        self.assertIn("キャラのストーリー画像の指示", data["prompt"][-1]["label"])
 
     def test_story_preview_then_post_uses_the_edited_caption(self):
         self.save(auto_reply=False)

@@ -30,6 +30,34 @@ function readStages() {
   return stages;
 }
 $('reset-stages').addEventListener('click', () => { fillStages(); notice('標準の振る舞いを入れました。保存すると反映されます。'); });
+function renderBaseImage(id) {
+  const target = $('base-image-preview'); target.replaceChildren(); target.textContent = id ? '読み込み中…' : '保存後に登録できます';
+  $('base-image-input').disabled = !id; $('base-image-delete').classList.add('hidden');
+  if (!id) return;
+  const image = document.createElement('img'); image.alt = 'ベース画像';
+  image.onload = () => { if (state.selectedId !== id) return; target.replaceChildren(image); $('base-image-delete').classList.remove('hidden'); };
+  image.onerror = () => { if (state.selectedId === id) target.textContent = '未登録'; };
+  image.src = `/api/characters/${id}/base-image?v=${Date.now()}`;
+}
+$('base-image-input').addEventListener('change', () => {
+  const file = $('base-image-input').files[0], id = state.selectedId;
+  $('base-image-input').value = '';
+  if (!file || !id) return;
+  if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) { notice('ベース画像は PNG・JPEG・WebP のいずれかにしてください。', true); return; }
+  if (file.size > 2_000_000) { notice('ベース画像は2MBまでです。', true); return; }
+  const reader = new FileReader();
+  reader.onload = async () => {
+    try { await post(`/api/characters/${id}/base-image`, { image: reader.result }); renderBaseImage(id); notice('ベース画像を保存しました。次のストーリーからこの絵柄で描きます。'); }
+    catch (error) { notice(error.message, true); }
+  };
+  reader.readAsDataURL(file);
+});
+$('base-image-delete').addEventListener('click', async () => {
+  const id = state.selectedId;
+  if (!id || !confirm('ベース画像を削除しますか？ストーリーの画像は写真風に戻ります。')) return;
+  try { await post(`/api/characters/${id}/base-image/delete`, {}); renderBaseImage(id); notice('ベース画像を削除しました。'); }
+  catch (error) { notice(error.message, true); }
+});
 function readSecrets() { return SECRET_LEVELS.map(level => ({ level, title: $(`secret-title-${level}`).value, content: $(`secret-content-${level}`).value })); }
 async function loadSecrets(id) { fillSecrets(); try { const { secrets } = await api(`/api/characters/${id}/secrets`); if (state.selectedId === id) fillSecrets(secrets); } catch (error) { if (state.selectedId === id) notice(error.message, true); } }
 function notice(message, error = false) { $('editor-notice').textContent = message; $('editor-notice').classList.toggle('error', error); }
@@ -54,7 +82,7 @@ function select(id) {
   $('character-profile-input').value = character.profile;
   $('character-handle-input').value = character.handle;
   $('relationship-weights').value = character.relationshipWeights || '';
-  fillStages(character.relationshipStages);
+  fillStages(character.relationshipStages); renderBaseImage(id);
   $('profile-length').textContent = character.profile.length.toLocaleString('ja-JP');
   renderIdentity(character.name, character.iconUrl);
   $('delete-character').classList.remove('hidden'); $('handle-result').textContent = character.atDid ? `公開アカウントを確認: ${character.atDid}` : 'ハンドルを保存すると公開プロフィールを照合できます。'; $('handle-result').className = character.atDid ? 'field-note ok' : 'field-note';
@@ -65,7 +93,7 @@ function select(id) {
 function newCharacter() {
   state.selectedId = null;
   $('editor-mode').textContent = 'NEW CHARACTER'; $('editor-title').textContent = 'キャラクターを作成';
-  $('character-form').reset(); fillSecrets(); fillStages(); $('profile-length').textContent = '0'; renderIdentity();
+  $('character-form').reset(); fillSecrets(); fillStages(); renderBaseImage(null); $('profile-length').textContent = '0'; renderIdentity();
   $('delete-character').classList.add('hidden'); $('handle-result').textContent = 'ハンドルを入力すると名前とアイコンを確認できます。'; $('handle-result').className = 'field-note';
   updateConnectButton(); $('connect-character').textContent = '保存してOAuth認証へ'; $('disconnect-character').classList.add('hidden'); $('account-preview').classList.add('hidden'); $('automation-panel').classList.add('hidden');
   notice('入力した内容はこのPC内の非公開DBに保存します。'); renderList();
@@ -267,7 +295,7 @@ async function loadAutomation(character) {
     $('auto-reply').checked = settings.auto_reply; $('auto-post').checked = settings.auto_post;
     $('extra-persona').value = settings.extra_persona; $('post-prompt').value = settings.post_prompt; $('schedule-base').value = settings.schedule_base;
     $('require-unlock').checked = settings.require_unlock; $('unlock-score').value = settings.unlock_score;
-    $('post-times').value = settings.post_times.join(', '); $('auto-story').checked = settings.auto_story; $('story-times').value = settings.story_times.join(', ');
+    $('post-times').value = settings.post_times.join(', '); $('auto-story').checked = settings.auto_story; $('story-times').value = settings.story_times.join(', '); $('story-image-prompt').value = settings.story_image_prompt;
     state.automationSettings = settings; state.memoryKinds = data.memoryKinds; state.initialAxes = data.initialAxes; $('story-preview').classList.add('hidden');
     renderAutomationState(settings); renderSchedule(data.today, data.now); renderRelationships(data.relationships, settings);
     const missing = Object.entries(data.missingScopes).filter(([, scopes]) => scopes.length).map(([kind]) => SCOPE_LABELS[kind]);
@@ -291,7 +319,7 @@ async function automationAction(button, message, run) {
 $('automation-form').addEventListener('submit', event => {
   event.preventDefault();
   automationAction($('save-automation'), '自動運用の設定を保存しています…', async id => {
-    const { settings } = await post(`/api/characters/${id}/automation`, { auto_reply: $('auto-reply').checked, auto_post: $('auto-post').checked, extra_persona: $('extra-persona').value, post_prompt: $('post-prompt').value, schedule_base: $('schedule-base').value, require_unlock: $('require-unlock').checked, unlock_score: Number($('unlock-score').value), post_times: $('post-times').value, auto_story: $('auto-story').checked, story_times: $('story-times').value });
+    const { settings } = await post(`/api/characters/${id}/automation`, { auto_reply: $('auto-reply').checked, auto_post: $('auto-post').checked, extra_persona: $('extra-persona').value, post_prompt: $('post-prompt').value, schedule_base: $('schedule-base').value, require_unlock: $('require-unlock').checked, unlock_score: Number($('unlock-score').value), post_times: $('post-times').value, auto_story: $('auto-story').checked, story_times: $('story-times').value, story_image_prompt: $('story-image-prompt').value });
     if (state.selectedId !== id) return;
     $('schedule-base').value = settings.schedule_base; $('post-times').value = settings.post_times.join(', '); $('story-times').value = settings.story_times.join(', ');
     state.automationSettings = settings; renderAutomationState(settings);

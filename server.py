@@ -58,6 +58,11 @@ AI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rst
 AI_MODEL = os.environ.get("AI_MODEL", "").strip()
 IMAGE_MODEL = os.environ.get("IMAGE_MODEL", "").strip() or "gpt-image-2"
 IMAGE_LIMIT = 1_000_000  # Bluesky's maximum size for an image in a post.
+BASE_IMAGE_LIMIT = 2_000_000  # A character's reference image for image generation (sent as JSON base64).
+BASE_IMAGE_TYPES = {b"\x89PNG\r\n\x1a\n": "image/png", b"\xff\xd8\xff": "image/jpeg"}
+# Base images are files named after the character's handle, so the team can share them through Git.
+BASE_IMAGE_DIR = ROOT / "shared" / "base_images"
+BASE_IMAGE_EXTENSIONS = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
 NO_TEMPERATURE = set()  # OpenAI models that only accept the default temperature.
 TLS_CONTEXT = None
 
@@ -113,6 +118,7 @@ MIGRATED_COLUMNS = (
     ("character_automation", "post_times", f"TEXT NOT NULL DEFAULT '{automation.DEFAULT_POST_TIMES}'"),
     ("character_automation", "auto_story", "INTEGER NOT NULL DEFAULT 0"),
     ("character_automation", "story_times", f"TEXT NOT NULL DEFAULT '{automation.DEFAULT_STORY_TIMES}'"),
+    ("character_automation", "story_image_prompt", "TEXT NOT NULL DEFAULT ''"),
 )
 UNLOCK_REQUIRED_BY_DEFAULT = True  # Characters without automation settings are locked until DMs open them.
 POSTS_CACHE = {}
@@ -661,17 +667,62 @@ def call_ai(messages, json_mode=False, temperature=0.75, model=None, timeout=120
     return content
 
 
-def generate_image(prompt):
-    """One JPEG from the OpenAI Images API, small enough for a Bluesky image post."""
+def image_mime(data):
+    """MIME type of a PNG, JPEG or WebP image from its first bytes, or None."""
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return next((mime for magic, mime in BASE_IMAGE_TYPES.items() if data.startswith(magic)), None)
+
+
+def base_image_files(character_id):
+    """Existing base image files of a character: shared/base_images/<handle>.<png|jpg|jpeg|webp>."""
+    with DB_LOCK, database() as db:
+        row = db.execute("SELECT handle FROM characters WHERE id=?", (character_id,)).fetchone()
+    handle = (row["handle"] if row else "").lower()
+    if not re.fullmatch(r"[a-z0-9.-]{3,253}", handle):
+        return handle, []
+    return handle, [BASE_IMAGE_DIR / f"{handle}{extension}" for extension in BASE_IMAGE_EXTENSIONS
+                    if (BASE_IMAGE_DIR / f"{handle}{extension}").is_file()]
+
+
+def base_image(character_id):
+    """The character's reference image for image generation as (bytes, mime), or None."""
+    _, files = base_image_files(character_id)
+    for path in files:
+        data = path.read_bytes()
+        mime = image_mime(data)
+        if mime and len(data) <= BASE_IMAGE_LIMIT:
+            return data, mime
+        print(f"Ignored base image {path.name}: not a PNG/JPEG/WebP of 2MB or less", file=sys.stderr)
+    return None
+
+
+def image_request(fields, reference):
+    """POST /images/generations, or /images/edits (multipart) when a reference image is given."""
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+    if reference is None:
+        return urllib.request.Request(AI_BASE_URL + "/images/generations", data=json.dumps(fields, ensure_ascii=False).encode(),
+                                      headers={**headers, "Content-Type": "application/json"}, method="POST")
+    data, mime = reference
+    boundary = secrets.token_hex(16)
+    body = b"".join(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode()
+                    for name, value in fields.items())
+    body += (f'--{boundary}\r\nContent-Disposition: form-data; name="image[]"; filename="base.{mime.split("/")[1]}"\r\n'
+             f"Content-Type: {mime}\r\n\r\n").encode() + data + f"\r\n--{boundary}--\r\n".encode()
+    return urllib.request.Request(AI_BASE_URL + "/images/edits", data=body,
+                                  headers={**headers, "Content-Type": f"multipart/form-data; boundary={boundary}"}, method="POST")
+
+
+def generate_image(prompt, reference=None):
+    """One JPEG from the OpenAI Images API, small enough for a Bluesky image post.
+    reference: (bytes, mime) of the character's base image, drawn in the same style and look."""
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY が設定されていません。.env を確認してください")
     width, height = automation.IMAGE_SIZE
     for compression in (80, 55):
-        body = {"model": IMAGE_MODEL, "prompt": prompt, "n": 1, "size": f"{width}x{height}",
-                "output_format": "jpeg", "output_compression": compression}
-        req = urllib.request.Request(AI_BASE_URL + "/images/generations", data=json.dumps(body, ensure_ascii=False).encode(),
-                                     headers={"Content-Type": "application/json", "Authorization": f"Bearer {OPENAI_API_KEY}"},
-                                     method="POST")
+        fields = {"model": IMAGE_MODEL, "prompt": prompt, "n": 1, "size": f"{width}x{height}",
+                  "output_format": "jpeg", "output_compression": compression}
+        req = image_request(fields, reference)
         try:
             with urllib.request.urlopen(req, timeout=300, context=tls_context()) as response:
                 result = json.load(response)
@@ -1266,6 +1317,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     raise ValueError("会話IDを指定してください")
                 result = oauth_call({"op": "messages", "did": did, "convoId": convo_id, "cursor": query.get("cursor", [""])[0]})
                 return self.send_json(200, result, cookie)
+            base_match = re.fullmatch(r"/api/characters/(\d+)/base-image", parsed.path)
+            if base_match:
+                found = base_image(int(base_match[1]))
+                if found is None:
+                    return self.send_error(404)
+                self.send_response(200)
+                self.send_header("Content-Type", found[1])
+                self.send_header("Content-Length", str(len(found[0])))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                self.wfile.write(found[0])
+                return
             icon_match = re.fullmatch(r"/api/characters/(\d+)/icon", parsed.path)
             if icon_match:
                 with DB_LOCK, database() as db:
@@ -1385,6 +1449,34 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     db.execute("UPDATE characters SET oauth_did='',oauth_owner='' WHERE id=?", (selected,))
                 forget_if_unused(character["oauth_did"])
                 return self.send_json(200, {"ok": True}, cookie)
+            base_post = re.fullmatch(r"/api/characters/(\d+)/base-image(?:/(delete))?", self.path)
+            if base_post:
+                selected = int(base_post[1])
+                handle, files = base_image_files(selected)
+                if not handle:
+                    raise ValueError("先にハンドルを保存してください")
+                if base_post[2] == "delete":
+                    for path in files:
+                        path.unlink()
+                    return self.send_json(200, {"ok": True}, cookie)
+                header, _, encoded = str(body.get("image", "")).partition(",")
+                if not header.startswith("data:image/") or ";base64" not in header:
+                    raise ValueError("画像ファイルを選んでください")
+                try:
+                    data = base64.b64decode(encoded, validate=True)
+                except ValueError as exc:
+                    raise ValueError("画像を読み取れませんでした") from exc
+                mime = image_mime(data)
+                if mime is None:
+                    raise ValueError("ベース画像は PNG・JPEG・WebP のいずれかにしてください")
+                if len(data) > BASE_IMAGE_LIMIT:
+                    raise ValueError("ベース画像は2MBまでです")
+                BASE_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+                for path in files:
+                    path.unlink()  # One file per character, whatever its previous format.
+                saved = BASE_IMAGE_DIR / f"{handle}{ {'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp'}[mime] }"
+                saved.write_bytes(data)
+                return self.send_json(200, {"ok": True, "file": f"shared/base_images/{saved.name}"}, cookie)
             relationship_post = re.fullmatch(r"/api/characters/(\d+)/relationship(?:/(delete))?", self.path)
             if relationship_post:
                 selected = int(relationship_post[1])
@@ -1427,7 +1519,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         "post_times": automation.parse_times(body.get("post_times", automation.DEFAULT_POST_TIMES), "投稿時刻"),
                         "auto_story": body.get("auto_story") is True,
                         "story_times": automation.parse_times(body.get("story_times", automation.DEFAULT_STORY_TIMES), "ストーリーの時刻"),
+                        "story_image_prompt": str(body.get("story_image_prompt", "")).strip(),
                     }
+                    if len(settings["story_image_prompt"]) > automation.STORY_IMAGE_PROMPT_LIMIT:
+                        raise ValueError(f"ストーリー画像の指示は{automation.STORY_IMAGE_PROMPT_LIMIT:,}文字までです")
                     if type(settings["unlock_score"]) is not int or not 1 <= settings["unlock_score"] <= 100:
                         raise ValueError("ReAl の解放に必要な好感度は1〜100の整数で入力してください")
                     if len(settings["post_prompt"]) > 4000 or len(settings["extra_persona"]) > 8000 or len(settings["schedule_base"]) > 20000:
@@ -1436,16 +1531,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     settings["schedule_base"] = json.dumps(base, ensure_ascii=False, indent=2)
                     with DB_LOCK, database() as db:
                         db.execute("""INSERT INTO character_automation(character_id,auto_reply,auto_post,post_prompt,extra_persona,schedule_base,
-                                      require_unlock,unlock_score,post_times,auto_story,story_times,updated_at)
-                                      VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(character_id) DO UPDATE SET auto_reply=excluded.auto_reply,
+                                      require_unlock,unlock_score,post_times,auto_story,story_times,story_image_prompt,updated_at)
+                                      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(character_id) DO UPDATE SET auto_reply=excluded.auto_reply,
                                       auto_post=excluded.auto_post,post_prompt=excluded.post_prompt,extra_persona=excluded.extra_persona,
                                       schedule_base=excluded.schedule_base,require_unlock=excluded.require_unlock,
                                       unlock_score=excluded.unlock_score,post_times=excluded.post_times,auto_story=excluded.auto_story,
-                                      story_times=excluded.story_times,updated_at=excluded.updated_at""",
+                                      story_times=excluded.story_times,story_image_prompt=excluded.story_image_prompt,
+                                      updated_at=excluded.updated_at""",
                                    (selected, int(settings["auto_reply"]), int(settings["auto_post"]), settings["post_prompt"],
                                     settings["extra_persona"], settings["schedule_base"], int(settings["require_unlock"]),
                                     settings["unlock_score"], ",".join(settings["post_times"]), int(settings["auto_story"]),
-                                    ",".join(settings["story_times"]), int(time.time())))
+                                    ",".join(settings["story_times"]), settings["story_image_prompt"], int(time.time())))
                     return self.send_json(200, {"settings": settings}, cookie)
                 if action == "schedule":
                     today = RUNNER.day(target, datetime.date.today(), regen=body.get("regen") is True)

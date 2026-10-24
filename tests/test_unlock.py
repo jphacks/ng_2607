@@ -192,6 +192,25 @@ class OpenAITest(unittest.TestCase):
         result, sent = self.request([], OPENAI_API_KEY="")
         self.assertIn("OPENAI_API_KEY", str(result))
 
+    def test_image_uses_edits_with_the_reference_image(self):
+        sent = []
+
+        def urlopen(req, timeout, context=None):
+            sent.append(req)
+            jpeg = __import__("base64").b64encode(b"\xff\xd8jpeg").decode()
+            return __import__("io").BytesIO(json.dumps({"data": [{"b64_json": jpeg}]}).encode())
+        with patch.multiple(server, OPENAI_API_KEY="sk-test", IMAGE_MODEL="gpt-image-test"), \
+             patch.object(server.urllib.request, "urlopen", side_effect=urlopen):
+            self.assertEqual(server.generate_image("絵"), b"\xff\xd8jpeg")
+            self.assertEqual(server.generate_image("絵", (b"\x89PNGdata", "image/png")), b"\xff\xd8jpeg")
+        self.assertTrue(sent[0].full_url.endswith("/images/generations"))
+        self.assertEqual(json.loads(sent[0].data)["model"], "gpt-image-test")
+        self.assertTrue(sent[1].full_url.endswith("/images/edits"))
+        self.assertIn("multipart/form-data; boundary=", sent[1].get_header("Content-type"))
+        self.assertIn(b'name="image[]"; filename="base.png"', sent[1].data)
+        self.assertIn(b"\x89PNGdata", sent[1].data)
+        self.assertIn('name="prompt"\r\n\r\n絵'.encode(), sent[1].data)
+
     def test_env_file_is_read_without_overriding_the_shell(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / ".env"

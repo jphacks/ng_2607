@@ -47,7 +47,9 @@ HISTORY_LIMIT = 20
 SCHEDULE_LOCK = threading.RLock()
 DEFAULT_UNLOCK_SCORE = 40  # Overall affinity through Bluesky DMs that opens the ReAl game.
 SETTING_KEYS = ("auto_reply", "auto_post", "post_prompt", "extra_persona", "schedule_base", "require_unlock", "unlock_score",
-                "post_times", "auto_story", "story_times")
+                "post_times", "auto_story", "story_times", "story_image_prompt")
+STORY_IMAGE_PROMPT_LIMIT = 6000
+SITUATION_HEADING = "【今回のシチュエーション】"
 DEFAULT_POST_TIMES = "12:30,19:00,22:00"  # Free in both default patterns.
 DEFAULT_STORY_TIMES = "20:00"
 MAX_TIMES = 12
@@ -57,6 +59,11 @@ STORY_CHARS = 60
 IMAGE_SIZE = (1024, 1536)  # Portrait, like a phone story.
 IMAGE_STYLE = ("スマートフォンで撮った自然な写真。縦長。人物の顔は写さない (手元や後ろ姿までにする)。"
                "画像の中に文字・ロゴ・実在の商標を入れない。")
+# With a base image the picture follows its art style, and the character may appear as drawn there.
+IMAGE_STYLE_WITH_BASE = ("添付した参照画像と同じ絵柄 (線のタッチ・塗り・色づかい) のイラストで描く。実写風・写真風にはしない。"
+                         "キャラクターが写る場合は、参照画像のキャラクターと同じ見た目 (顔立ち・髪型・髪色・目の色・服装・雰囲気) にする。"
+                         "見た目について文章と参照画像が食い違うときは、参照画像を優先する。"
+                         "縦長。画像の中に文字・ロゴ・実在の商標を入れない。")
 
 DEFAULT_POST_PROMPT = (
     "Bluesky に日々のつぶやきを投稿してください。\n"
@@ -363,10 +370,17 @@ STORY_RULES = f"""出力ルール:
 - image_prompt は、あなたがスマートフォンで撮った写真に写っているものを具体的に書く (場所・物・光・雰囲気)
 - 写真には人物の顔を写さない。実在の店名・商品名・ロゴ・文字は入れない
 - 与えられた事実にない出来事を写さない"""
+STORY_RULES_WITH_BASE = f"""出力ルール:
+- JSON のみで {{"caption": "一言", "image_prompt": "絵の内容"}} を返す
+- caption は日本語で {STORY_CHARS} 文字以内。ハッシュタグは付けない。空でもよい
+- image_prompt は、その場面の絵の内容を具体的に書く (場所・物・光・雰囲気、あなた自身が写るならそのポーズや表情)
+- あなたの見た目 (髪型・髪色・目の色・服装・アクセサリー) は image_prompt に書かない。見た目は参照画像に任せる
+- あなた自身 (参照画像のキャラクター) が写ってもよい。ほかの人物の顔は描かない。実在の店名・商品名・ロゴ・文字は入れない
+- 与えられた事実にない出来事を描かない"""
 
 
-def story_sections(character, settings, facts, now):
-    """The story prompt as labelled parts, like post_sections."""
+def story_sections(character, settings, facts, now, with_base=False):
+    """The story prompt as labelled parts, like post_sections. with_base: the character has a base image."""
     recent = settings.get("recent_posts", [])
     request = f"今は {now:%H:%M} です。今日のストーリーを1件作ってください。"
     if recent:
@@ -376,7 +390,7 @@ def story_sections(character, settings, facts, now):
         {"key": "extra", "label": "自動投稿・DM用の追加の指示", "content": settings.get("extra_persona", "").strip()},
         {"key": "safety", "label": "守ること", "content": SAFETY},
         {"key": "topic", "label": "ストーリーの依頼", "content": STORY_TOPIC},
-        {"key": "rules", "label": "出力ルール", "content": STORY_RULES},
+        {"key": "rules", "label": "出力ルール", "content": STORY_RULES_WITH_BASE if with_base else STORY_RULES},
         {"key": "schedule", "label": "今日の予定から渡す事実", "content": facts_text(facts)},
         {"key": "now", "label": "現在の日時", "content": now_line(now)},
         {"key": "request", "label": "依頼 (user メッセージ)", "content": request},
@@ -391,13 +405,26 @@ def sections_messages(sections):
     ]
 
 
-def image_prompt(scene):
-    return f"{scene.strip()}\n\n{IMAGE_STYLE}"
+def image_prompt(scene, with_base=False, template="", caption="", earlier=()):
+    """The prompt for the image API. A character's own story image prompt (template) replaces the built-in style;
+    its situation section is filled with the scene picked from today's schedule."""
+    if not template.strip():
+        return f"{scene.strip()}\n\n{IMAGE_STYLE_WITH_BASE if with_base else IMAGE_STYLE}"
+    head = template.split(SITUATION_HEADING)[0].rstrip()
+    situation = [scene.strip(), "予定の場面・時間帯に合わせて描く。"]
+    if caption:
+        situation.append(f"画像に入れる一言 (字幕): 「{caption}」")
+    if earlier:
+        situation.append("今日すでに投稿した場面 (これらとは違う場面・構図にする):\n" + "\n".join(f"- {item}" for item in earlier))
+    return f"{head}\n{SITUATION_HEADING}\n" + "\n".join(situation)
 
 
-def generate_story(ai, make_image, character, settings, facts, now):
-    """Caption and photo for a Pinksky story. make_image(prompt) returns JPEG bytes."""
-    sections = story_sections(character, settings, facts, now)
+def generate_story(ai, make_image, character, settings, facts, now, reference=None, earlier=()):
+    """Caption and picture for a Pinksky story. make_image(prompt, reference) returns JPEG bytes.
+    reference: (bytes, mime) of the character's base image, or None for a photo without the character.
+    earlier: scenes of today's earlier stories, so a custom image prompt can vary the composition."""
+    with_base = reference is not None
+    sections = story_sections(character, settings, facts, now, with_base)
     messages = sections_messages(sections)
     for _ in range(RETRIES):
         try:
@@ -407,9 +434,12 @@ def generate_story(ai, make_image, character, settings, facts, now):
         if not isinstance(out, dict) or not isinstance(out.get("image_prompt"), str) or not out["image_prompt"].strip():
             continue
         caption = clean(out.get("caption") if isinstance(out.get("caption"), str) else "")[:STORY_CHARS * 2]
-        prompt = image_prompt(out["image_prompt"][:1500])
-        sections.append({"key": "image", "label": "画像生成に渡したプロンプト", "content": prompt})
-        return {"caption": caption, "imagePrompt": prompt, "image": make_image(prompt), "prompt": sections}
+        template = settings.get("story_image_prompt", "")
+        prompt = image_prompt(out["image_prompt"][:1500], with_base, template, caption, earlier)
+        label = ("画像生成に渡したプロンプト" + (" (キャラのストーリー画像の指示)" if template.strip() else "")
+                 + (" (ベース画像を参照)" if with_base else " (ベース画像なし)"))
+        sections.append({"key": "image", "label": label, "content": prompt})
+        return {"caption": caption, "imagePrompt": prompt, "image": make_image(prompt, reference), "prompt": sections}
     raise RuntimeError(f"{RETRIES} 回試しましたが、ストーリーの内容を作れませんでした。AI の設定を確認してください")
 
 
@@ -476,7 +506,7 @@ class Runner:
         with self.env.DB_LOCK, self.env.database() as db:
             rows = db.execute("""SELECT c.id,c.name,c.profile,c.oauth_did,c.relationship_weights,c.relationship_stages,a.auto_reply,a.auto_post,
                                         a.post_prompt,a.extra_persona,a.schedule_base,a.recent_posts,a.require_unlock,a.unlock_score,
-                                        a.post_times,a.auto_story,a.story_times
+                                        a.post_times,a.auto_story,a.story_times,a.story_image_prompt
                                  FROM characters c JOIN character_automation a ON a.character_id=c.id
                                  WHERE (a.auto_reply=1 OR a.auto_post=1 OR a.auto_story=1) AND c.oauth_did!='' AND c.oauth_did=c.at_did""").fetchall()
             result = []
@@ -553,8 +583,12 @@ class Runner:
 
     def make_story(self, target, now=None):
         now = now or dt.datetime.now()
-        facts = now_context(self.day(target, now.date()), now)
-        return generate_story(self.env.call_ai, self.env.generate_image, target, target, facts, now)
+        data = self.day(target, now.date())
+        facts = now_context(data, now)
+        earlier = [item["imagePrompt"].split(SITUATION_HEADING)[-1].strip().splitlines()[0][:120]
+                   for item in data.get("story_log", []) if item.get("imagePrompt")][-6:]
+        return generate_story(self.env.call_ai, self.env.generate_image, target, target, facts, now,
+                              self.env.base_image(target["id"]), earlier)
 
     def preview_story(self, target):
         """Generate a story and keep it until the admin posts it (the image is too large to round-trip)."""
@@ -745,4 +779,5 @@ def settings_from_row(row):
         "post_times": parse_times(row["post_times"] if "post_times" in keys else DEFAULT_POST_TIMES, "投稿時刻"),
         "auto_story": bool(row["auto_story"]) if "auto_story" in keys else False,
         "story_times": parse_times(row["story_times"] if "story_times" in keys else DEFAULT_STORY_TIMES, "ストーリーの時刻"),
+        "story_image_prompt": (row["story_image_prompt"] or "") if "story_image_prompt" in keys else "",
     }
