@@ -1,0 +1,299 @@
+const $ = id => document.getElementById(id);
+const state = { characters: [], selectedId: null, postCursor: null, convoCursor: null, messageCursor: null, convoId: null };
+async function api(path, options = {}) { const response = await fetch(path, { credentials: 'same-origin', ...options }); const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`); return data; }
+function post(path, body) { return api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); }
+const SECRET_LEVELS = [25, 50, 75, 100];
+function fillSecrets(secrets = []) { for (const level of SECRET_LEVELS) { const item = secrets.find(secret => secret.level === level); $(`secret-title-${level}`).value = item?.title || ''; $(`secret-content-${level}`).value = item?.content || ''; } }
+function readSecrets() { return SECRET_LEVELS.map(level => ({ level, title: $(`secret-title-${level}`).value, content: $(`secret-content-${level}`).value })); }
+async function loadSecrets(id) { fillSecrets(); try { const { secrets } = await api(`/api/characters/${id}/secrets`); if (state.selectedId === id) fillSecrets(secrets); } catch (error) { if (state.selectedId === id) notice(error.message, true); } }
+function notice(message, error = false) { $('editor-notice').textContent = message; $('editor-notice').classList.toggle('error', error); }
+function updateConnectButton() { $('connect-character').disabled = !$('character-handle-input').value.trim(); }
+function renderIcon(url, name = '') { const target = $('icon-preview'); target.replaceChildren(); if (url) { const img = document.createElement('img'); img.src = url; img.alt = ''; target.append(img); } else target.textContent = name.slice(0, 1) || '✦'; }
+function renderIdentity(name = '表示名を取得します', url = null) { $('character-name-display').textContent = name; renderIcon(url, name === '表示名を取得します' ? '' : name); }
+function renderList() {
+  $('character-count').textContent = `${state.characters.length}人`;
+  $('character-list').replaceChildren(...state.characters.map(character => {
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'character-list-item' + (character.id === state.selectedId ? ' selected' : '');
+    const icon = document.createElement('span'); icon.className = 'list-icon';
+    if (character.iconUrl) { const img = document.createElement('img'); img.src = character.iconUrl; img.alt = ''; icon.append(img); } else icon.textContent = character.name.slice(0, 1);
+    const info = document.createElement('span'); info.className = 'list-info'; const name = document.createElement('strong'); name.textContent = character.name; const handle = document.createElement('small'); handle.textContent = character.handle ? `@${character.handle}` : 'ハンドル未設定'; info.append(name, handle); button.append(icon, info);
+    button.addEventListener('click', () => select(character.id)); return button;
+  }));
+}
+function select(id) {
+  const character = state.characters.find(item => item.id === id);
+  if (!character) return;
+  state.selectedId = id;
+  $('editor-mode').textContent = `CHARACTER / ${id}`; $('editor-title').textContent = `${character.name}を編集`;
+  $('character-profile-input').value = character.profile;
+  $('character-handle-input').value = character.handle;
+  $('relationship-weights').value = character.relationshipWeights || '';
+  $('profile-length').textContent = character.profile.length.toLocaleString('ja-JP');
+  renderIdentity(character.name, character.iconUrl);
+  $('delete-character').classList.remove('hidden'); $('handle-result').textContent = character.atDid ? `公開アカウントを確認: ${character.atDid}` : 'ハンドルを保存すると公開プロフィールを照合できます。'; $('handle-result').className = character.atDid ? 'field-note ok' : 'field-note';
+  updateConnectButton(); $('disconnect-character').classList.toggle('hidden', !character.oauthConnected);
+  $('connect-character').textContent = character.oauthConnected ? '保存してOAuthを再接続' : '保存してOAuth認証へ';
+  notice('編集内容を保存できます。'); renderList(); loadSecrets(id); loadAutomation(character); refreshAccount(character);
+}
+function newCharacter() {
+  state.selectedId = null;
+  $('editor-mode').textContent = 'NEW CHARACTER'; $('editor-title').textContent = 'キャラクターを作成';
+  $('character-form').reset(); fillSecrets(); $('profile-length').textContent = '0'; renderIdentity();
+  $('delete-character').classList.add('hidden'); $('handle-result').textContent = 'ハンドルを入力すると名前とアイコンを確認できます。'; $('handle-result').className = 'field-note';
+  updateConnectButton(); $('connect-character').textContent = '保存してOAuth認証へ'; $('disconnect-character').classList.add('hidden'); $('account-preview').classList.add('hidden'); $('automation-panel').classList.add('hidden');
+  notice('入力した内容はこのPC内の非公開DBに保存します。'); renderList();
+}
+async function load(preferredId = null) { try { const data = await api('/api/characters'); state.characters = data.characters; renderList(); const callback = new URLSearchParams(location.search); const requested = preferredId || Number(callback.get('characterId')); if (state.characters.length) select(state.characters.find(item => item.id === requested)?.id || state.characters[0].id); else newCharacter(); if (callback.get('oauth') === 'connected') notice('OAuth接続が完了しました。DMを読み、AIの返信を送信できます。'); } catch (error) { notice(error.message, true); } }
+
+function clearAccount() {
+  state.postCursor = state.convoCursor = state.messageCursor = state.convoId = null;
+  $('account-profile').replaceChildren(); $('account-posts').replaceChildren(); $('account-convos').replaceChildren(); $('account-messages').replaceChildren();
+  $('message-section').classList.add('hidden'); $('posts-more').classList.add('hidden'); $('convos-more').classList.add('hidden'); $('messages-more').classList.add('hidden');
+}
+function textNode(tag, content, className = '') { const element = document.createElement(tag); element.textContent = content ?? ''; if (className) element.className = className; return element; }
+async function refreshAccount(character) {
+  clearAccount(); $('account-preview').classList.toggle('hidden', !character.atDid);
+  if (!character.atDid) return;
+  $('account-status').textContent = character.oauthConnected ? 'OAuth接続済み' : '公開データのみ';
+  $('convo-note').textContent = character.oauthConnected ? 'DMの会話を読み込んでいます…' : 'DMを見るには、このアカウントをOAuth接続してください。';
+  const id = character.id;
+  try {
+    const { profile, character: refreshed } = await api(`/api/characters/${id}/profile`);
+    if (state.selectedId !== id) return;
+    if (refreshed) {
+      const index = state.characters.findIndex(item => item.id === id);
+      if (index >= 0) state.characters[index] = refreshed;
+      renderList();
+      if ($('character-handle-input').value.trim().replace(/^@/, '').toLowerCase() === refreshed.handle.toLowerCase()) {
+        $('editor-title').textContent = `${refreshed.name}を編集`;
+        renderIdentity(refreshed.name, refreshed.iconUrl);
+      }
+    }
+    const avatar = document.createElement('img'); if (profile.avatar) avatar.src = profile.avatar; avatar.alt = '';
+    const info = document.createElement('div'); info.append(textNode('strong', profile.displayName || profile.handle), textNode('small', `@${profile.handle} · ${profile.did}`), textNode('p', profile.description || '自己紹介なし'));
+    $('account-profile').replaceChildren(avatar, info);
+  } catch (error) { if (state.selectedId === id) $('account-profile').textContent = error.message; }
+  await loadPosts(id);
+  if (character.oauthConnected) await loadConvos(id);
+}
+async function loadPosts(id) {
+  const params = new URLSearchParams(); if (state.postCursor) params.set('cursor', state.postCursor);
+  try {
+    const page = await api(`/api/characters/${id}/posts?${params}`);
+    if (state.selectedId !== id) return;
+    const posts = page.feed || [];
+    for (const item of posts) {
+      const card = textNode('div', '', 'account-item');
+      card.append(textNode('time', item.post?.record?.createdAt ? new Date(item.post.record.createdAt).toLocaleString('ja-JP') : ''), textNode('p', item.post?.record?.text || 'テキストのない投稿'));
+      $('account-posts').append(card);
+    }
+    if (!$('account-posts').children.length) $('account-posts').textContent = '投稿はありません。';
+    state.postCursor = page.cursor || null; $('posts-more').classList.toggle('hidden', !state.postCursor);
+  } catch (error) { if (state.selectedId === id) $('account-posts').textContent = error.message; }
+}
+async function loadConvos(id) {
+  const params = new URLSearchParams(); if (state.convoCursor) params.set('cursor', state.convoCursor);
+  try {
+    const page = await api(`/api/characters/${id}/convos?${params}`);
+    if (state.selectedId !== id) return;
+    for (const convo of page.convos || []) {
+      const button = textNode('button', '', 'convo-item'); button.type = 'button';
+      const others = (convo.members || []).filter(member => member.did !== state.characters.find(c => c.id === id)?.atDid);
+      button.append(textNode('strong', others.map(member => member.displayName || member.handle || member.did).join('、') || '会話'), textNode('small', convo.lastMessage?.text || convo.id));
+      button.addEventListener('click', () => { state.convoId = convo.id; state.messageCursor = null; $('account-messages').replaceChildren(); $('message-section').classList.remove('hidden'); $('message-heading').textContent = `DM本文 · ${others.map(member => member.handle || member.did).join('、')}`; loadMessages(id); });
+      $('account-convos').append(button);
+    }
+    state.convoCursor = page.cursor || null; $('convos-more').classList.toggle('hidden', !state.convoCursor);
+    $('convo-note').textContent = $('account-convos').children.length ? `${$('account-convos').children.length}件の会話を表示中。選ぶと本文を取得します。` : 'DMの会話はありません。';
+  } catch (error) { if (state.selectedId === id) $('convo-note').textContent = error.message; }
+}
+async function loadMessages(id) {
+  if (!state.convoId) return;
+  const convoId = state.convoId;
+  const params = new URLSearchParams({ convoId }); if (state.messageCursor) params.set('cursor', state.messageCursor);
+  try {
+    const page = await api(`/api/characters/${id}/messages?${params}`);
+    if (state.selectedId !== id || state.convoId !== convoId) return;
+    for (const item of page.messages || []) {
+      const card = textNode('article', '', 'account-item dm-item');
+      card.append(textNode('strong', item.sender?.did || item.$type || '不明な送信者'), textNode('time', item.sentAt ? new Date(item.sentAt).toLocaleString('ja-JP') : ''), textNode('p', typeof item.text === 'string' ? item.text : 'テキスト以外のDM'));
+      const details = document.createElement('details'); details.append(textNode('summary', '取得した全データ'), textNode('pre', JSON.stringify(item, null, 2))); card.append(details); $('account-messages').append(card);
+    }
+    if (!$('account-messages').children.length) $('account-messages').textContent = 'この会話にDMはありません。';
+    state.messageCursor = page.cursor || null; $('messages-more').classList.toggle('hidden', !state.messageCursor);
+  } catch (error) { if (state.selectedId === id) $('account-messages').textContent = error.message; }
+}
+
+const STATUS_LABELS = { free: '空き', busy: '忙しい', sleep: '睡眠' };
+const SCOPE_LABELS = { reply: 'DMの自動返信', post: '自動投稿' };
+const POST_STATUS = { posted: '投稿済み', manual: '手動投稿', missed: '見送り' };
+function automationNotice(message, error = false) { $('automation-notice').textContent = message; $('automation-notice').classList.toggle('error', error); }
+const AXIS_NAMES = { affection: '好意', trust: '信頼', romance: '恋愛感情' };
+function renderRelationships(relationships, settings) {
+  const target = $('dm-relationships');
+  if (!relationships.length) { target.replaceChildren(textNode('p', 'まだDMで話した相手はいません。自動返信で話すと、相手ごとの好感度がここに表示されます。', 'schedule-meta')); return; }
+  target.replaceChildren(...relationships.map(item => {
+    const row = textNode('div', '', 'relationship-row');
+    const head = textNode('div', '', 'relationship-head');
+    head.append(textNode('strong', `@${item.handle || item.did}`), textNode('span', item.unlocked ? 'ReAl 解放済み' : `あと ${Math.max(0, settings.unlock_score - item.overall)}`, item.unlocked ? 'unlock-badge open' : 'unlock-badge'));
+    const axes = Object.entries(item.axes).map(([axis, value]) => `${AXIS_NAMES[axis]} ${Math.round(value)}`).join(' · ');
+    const delta = item.lastDelta ? ' ／ 前回 ' + Object.entries(item.lastDelta).map(([axis, value]) => `${AXIS_NAMES[axis]} ${value > 0 ? '+' : ''}${value}`).join(' ') : '';
+    row.append(head, textNode('small', `総合 ${item.overall} / ${settings.unlock_score} · ${item.label} · ${axes}${delta}`));
+    return row;
+  }));
+}
+function renderAutomationState(settings) { $('automation-state').textContent = `自動返信 ${settings.auto_reply ? 'ON' : 'OFF'} · 自動投稿 ${settings.auto_post ? 'ON' : 'OFF'}`; }
+function renderSchedule(today, now) {
+  const target = $('today-schedule'); target.replaceChildren();
+  if (!today) { target.append(textNode('p', '今日の予定はまだありません。自動運用を有効にすると最初の確認時に作られます。「作る・作り直す」で今すぐ作れます (AIを使います)。', 'schedule-meta')); return; }
+  for (const block of today.blocks) {
+    const row = textNode('div', '', 'schedule-block' + (block.start <= now && now < block.end ? ' current' : ''));
+    row.append(textNode('time', `${block.start}〜${block.end}`), textNode('span', STATUS_LABELS[block.status] || block.status, `status-tag status-${block.status}`), textNode('span', `${block.activity}: ${block.detail}`));
+    target.append(row);
+  }
+  const logs = Object.fromEntries((today.post_log || []).filter(item => item.status !== 'manual').map(item => [item.time, item]));
+  const lines = [];
+  if (today.events?.length) lines.push('出来事: ' + today.events.map(event => `${event.time} ${event.text}`).join(' / '));
+  lines.push('投稿時刻: ' + (today.post_times.map(time => `${time}${logs[time] ? ` (${POST_STATUS[logs[time].status] || logs[time].status})` : time <= now ? ' (確認待ち)' : ''}`).join('、') || 'なし'));
+  for (const item of (today.post_log || []).filter(item => item.text)) lines.push(`${item.at ? new Date(item.at).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }) : item.time} ${POST_STATUS[item.status] || item.status}: ${item.text}`);
+  lines.push(`今日のDM自動返信: ${(today.dm_log || []).length}件` + ((today.dm_log || []).length ? ` (${[...new Set(today.dm_log.map(item => '@' + item.handle))].join('、')})` : ''));
+  target.append(textNode('p', lines.join('\n'), 'schedule-meta'));
+}
+async function loadAutomation(character) {
+  $('automation-panel').classList.toggle('hidden', !character.oauthConnected);
+  if (!character.oauthConnected) return;
+  const id = character.id;
+  $('automation-body').classList.add('hidden'); $('automation-scope').classList.add('hidden'); $('automation-state').textContent = '';
+  automationNotice('自動運用の設定を読み込んでいます…');
+  try {
+    const data = await api(`/api/characters/${id}/automation`);
+    if (state.selectedId !== id) return;
+    const { settings } = data;
+    $('auto-reply').checked = settings.auto_reply; $('auto-post').checked = settings.auto_post;
+    $('extra-persona').value = settings.extra_persona; $('post-prompt').value = settings.post_prompt; $('schedule-base').value = settings.schedule_base;
+    $('require-unlock').checked = settings.require_unlock; $('unlock-score').value = settings.unlock_score;
+    renderAutomationState(settings); renderSchedule(data.today, data.now); renderRelationships(data.relationships, settings);
+    const missing = Object.entries(data.missingScopes).filter(([, scopes]) => scopes.length).map(([kind]) => SCOPE_LABELS[kind]);
+    $('automation-scope').textContent = missing.length ? `今のOAuth接続には ${missing.join('・')} の権限がありません。上の「保存してOAuthを再接続」から認証し直してください。` : '';
+    $('automation-scope').classList.toggle('hidden', !missing.length);
+    const status = data.status || {};
+    const parts = [];
+    if (status.lastCheckAt) parts.push(`最終確認 ${new Date(status.lastCheckAt).toLocaleTimeString('ja-JP')}`);
+    if (data.gamePlayers) parts.push(`ゲームのプレイヤー${data.gamePlayers}人とのDMは自動返信の対象外`);
+    if (settings.require_unlock && !settings.auto_reply) parts.push('ReAl の解放はDMの自動返信で好感度を上げたときだけ起きます。自動返信がオフのままだと、誰も解放されません。');
+    if (status.lastError) parts.push(`直近のエラー (${new Date(status.lastErrorAt).toLocaleTimeString('ja-JP')}): ${status.lastError}`);
+    automationNotice(parts.join('\n') || '設定を編集できます。', Boolean(status.lastError));
+    $('automation-body').classList.remove('hidden');
+  } catch (error) { if (state.selectedId === id) automationNotice(error.message, true); }
+}
+async function automationAction(button, message, run) {
+  const id = state.selectedId; button.disabled = true; automationNotice(message);
+  try { await run(id); } catch (error) { if (state.selectedId === id) automationNotice(error.message, true); }
+  finally { button.disabled = false; }
+}
+$('automation-form').addEventListener('submit', event => {
+  event.preventDefault();
+  automationAction($('save-automation'), '自動運用の設定を保存しています…', async id => {
+    const { settings } = await post(`/api/characters/${id}/automation`, { auto_reply: $('auto-reply').checked, auto_post: $('auto-post').checked, extra_persona: $('extra-persona').value, post_prompt: $('post-prompt').value, schedule_base: $('schedule-base').value, require_unlock: $('require-unlock').checked, unlock_score: Number($('unlock-score').value) });
+    if (state.selectedId !== id) return;
+    $('schedule-base').value = settings.schedule_base; renderAutomationState(settings);
+    automationNotice('自動運用の設定を保存しました。数秒以内にバックグラウンドの処理に反映されます。');
+  });
+});
+$('regen-schedule').addEventListener('click', () => automationAction($('regen-schedule'), '今日の予定を作っています… (AIで数十秒かかることがあります)', async id => {
+  const { today } = await post(`/api/characters/${id}/automation/schedule`, { regen: true });
+  if (state.selectedId !== id) return;
+  renderSchedule(today, new Date().toTimeString().slice(0, 5)); automationNotice('今日の予定を作り直しました。記録済みの投稿・DM返信は残ります。');
+}));
+$('preview-post').addEventListener('click', () => automationAction($('preview-post'), '投稿文を生成しています…', async id => {
+  const { text } = await post(`/api/characters/${id}/automation/preview`, {});
+  if (state.selectedId !== id) return;
+  $('manual-post').value = text; $('manual-length').textContent = `${text.length} / 300`; automationNotice('投稿文を生成しました。必要なら編集してから投稿してください。');
+}));
+$('send-post').addEventListener('click', () => {
+  const text = $('manual-post').value.trim();
+  if (!text) { automationNotice('投稿文を入力してください。', true); return; }
+  const character = state.characters.find(item => item.id === state.selectedId);
+  if (!confirm(`@${character?.handle} として Bluesky に投稿しますか？\n\n${text}`)) return;
+  automationAction($('send-post'), '投稿しています…', async id => {
+    await post(`/api/characters/${id}/automation/post`, { text });
+    if (state.selectedId !== id) return;
+    $('manual-post').value = ''; $('manual-length').textContent = '0 / 300';
+    await loadAutomation(state.characters.find(item => item.id === id)); automationNotice('Bluesky に投稿しました。');
+    state.postCursor = null; $('account-posts').replaceChildren(); loadPosts(id);
+  });
+});
+$('manual-post').addEventListener('input', () => { $('manual-length').textContent = `${$('manual-post').value.length} / 300`; });
+
+$('new-character').addEventListener('click', newCharacter);
+async function saveCharacter() {
+  const data = await post('/api/characters/save', { id: state.selectedId, profile: $('character-profile-input').value, handle: $('character-handle-input').value, relationshipWeights: $('relationship-weights').value, secrets: readSecrets() });
+  const index = state.characters.findIndex(item => item.id === data.character.id);
+  if (index >= 0) state.characters[index] = data.character; else state.characters.push(data.character);
+  select(data.character.id);
+  return data.character;
+}
+$('connect-character').addEventListener('click', async () => {
+  if (!$('character-form').reportValidity()) return;
+  const button = $('connect-character'); button.disabled = true;
+  try {
+    notice('編集内容を保存しています…');
+    const character = await saveCharacter();
+    button.disabled = true;
+    if (!character.atDid) throw new Error('ハンドルを確認できません。入力内容を確認してください。');
+    notice('OAuth認証画面を準備しています…');
+    const { url } = await post('/api/oauth/start', { role: 'character', characterId: character.id });
+    location.assign(url);
+  } catch (error) { notice(error.message, true); updateConnectButton(); }
+});
+$('disconnect-character').addEventListener('click', async () => { try { await post('/api/characters/disconnect', { id: state.selectedId }); await load(state.selectedId); notice('OAuth接続を解除しました。'); } catch (error) { notice(error.message, true); } });
+$('posts-more').addEventListener('click', () => loadPosts(state.selectedId));
+$('convos-more').addEventListener('click', () => loadConvos(state.selectedId));
+$('messages-more').addEventListener('click', () => loadMessages(state.selectedId));
+$('character-profile-input').addEventListener('input', () => { $('profile-length').textContent = $('character-profile-input').value.length.toLocaleString('ja-JP'); });
+$('character-handle-input').addEventListener('input', () => {
+  updateConnectButton();
+  const handle = $('character-handle-input').value.trim().replace(/^@/, '');
+  const saved = state.characters.find(item => item.id === state.selectedId);
+  if (saved && handle.toLowerCase() === saved.handle.toLowerCase()) renderIdentity(saved.name, saved.iconUrl);
+  else renderIdentity();
+  $('handle-result').textContent = handle ? '公開プロフィールを確認すると名前とアイコンを表示します。' : 'ハンドルを入力すると名前とアイコンを確認できます。';
+  $('handle-result').className = 'field-note';
+});
+$('check-handle').addEventListener('click', async () => {
+  const handle = $('character-handle-input').value.trim().replace(/^@/, '');
+  if (!handle) { $('handle-result').textContent = 'ハンドルを入力してください。'; $('handle-result').className = 'field-note error'; return; }
+  $('handle-result').textContent = '公開プロフィールを確認しています…'; $('handle-result').className = 'field-note';
+  try {
+    const { profile } = await api(`/api/profile?handle=${encodeURIComponent(handle)}`);
+    if ($('character-handle-input').value.trim().replace(/^@/, '').toLowerCase() !== handle.toLowerCase()) return;
+    const name = typeof profile.displayName === 'string' && profile.displayName.trim() ? profile.displayName.trim() : profile.handle;
+    const avatar = typeof profile.avatar === 'string' && profile.avatar.startsWith('https://') ? profile.avatar : null;
+    renderIdentity(name, avatar);
+    $('handle-result').textContent = `公開プロフィールを確認: @${profile.handle} · ${profile.did}。保存すると名前とアイコンが反映されます。`;
+    $('handle-result').className = 'field-note ok';
+  } catch (error) {
+    if ($('character-handle-input').value.trim().replace(/^@/, '').toLowerCase() !== handle.toLowerCase()) return;
+    $('handle-result').textContent = error.message; $('handle-result').className = 'field-note error';
+  }
+});
+$('character-form').addEventListener('submit', async event => {
+  event.preventDefault(); $('save-character').disabled = true;
+  try {
+    await saveCharacter(); notice('キャラクターを保存しました。');
+  } catch (error) { notice(error.message, true); }
+  finally { $('save-character').disabled = false; }
+});
+$('delete-character').addEventListener('click', async () => {
+  const character = state.characters.find(item => item.id === state.selectedId);
+  if (!character || !confirm(`${character.name}を削除しますか？ このキャラの会話と好感度も削除されます。`)) return;
+  try { await post('/api/characters/delete', { id: character.id }); state.characters = state.characters.filter(item => item.id !== character.id); state.characters.length ? select(state.characters[0].id) : newCharacter(); notice('キャラクターを削除しました。'); }
+  catch (error) { notice(error.message, true); }
+});
+async function loadConditions() {
+  try {
+    const { conditions } = await api('/api/relationship/conditions');
+    $('condition-table').replaceChildren(...conditions.map(item => { const row = textNode('div', '', 'condition-row'); row.append(textNode('code', item.id), textNode('span', `${item.axisLabel} ${item.weight > 0 ? '+' : ''}${item.weight}${item.major ? ' · 重要' : ''}`), textNode('span', item.label)); return row; }));
+  } catch (error) { $('condition-table').textContent = error.message; }
+}
+load(); loadConditions();

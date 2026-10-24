@@ -1,0 +1,156 @@
+/* Overrides on top of the Hiyori design for the real, data-driven screens. */
+
+/* Header */
+.ui-page .brand{gap:16px}
+.ui-page .brand-caption{margin-left:8px}
+.brand-actions{display:flex;align-items:center;gap:10px;margin-left:auto}
+.ui-switch{font:inherit;font-size:11px;padding:9px 12px;border:1px solid #e4d6dc;background:white;color:#986477;border-radius:8px}
+.ui-switch:hover{background:var(--soft)}
+.ui-account{position:relative;flex-shrink:0;font-size:11px;color:#967283}
+.ui-account summary{cursor:pointer;list-style:none;border:1px solid #e4d6dc;border-radius:8px;padding:9px 12px;background:white}
+.ui-account summary::-webkit-details-marker{display:none}
+.ui-account-body{position:absolute;right:0;top:calc(100% + 8px);z-index:20;padding:16px;width:260px;max-width:calc(100vw - 32px);background:white;border:1px solid #eadce2;border-radius:12px;box-shadow:0 8px 32px #44303818;overflow-wrap:anywhere}
+.ui-account-body strong{font-weight:500;font-size:11px}
+.ui-account-body p{color:#7c8088;font-size:12px;line-height:1.8}
+.ui-manage{display:block;margin:0 0 12px;color:#a24869;font-size:11px;text-decoration:none}
+.ui-manage:hover{text-decoration:underline}
+.ui-logout{font:inherit;width:100%;min-height:40px;background:#fff3f6;color:#a24869;border:1px solid #e9c5d2;border-radius:8px}
+.ui-error{display:flex;align-items:center;justify-content:space-between;gap:12px;max-width:1240px;color:#a33050;background:#fff0f4;border:1px solid #edb8c9;border-radius:10px;padding:10px 14px;font-size:12px;line-height:1.8;margin:0 auto 12px}
+.ui-error button,.retry-message,.read-retry{font:inherit;font-size:11px;color:#a33050;background:white;border:1px solid #d99aaf;border-radius:6px;padding:5px 10px;flex-shrink:0}
+.retry-message{margin:6px 0 0 6px}
+
+/* Partner selection: compact, scannable list of small cards */
+.ui-page .partner-selection{max-width:960px;margin:8px auto 48px;text-align:left}
+.ui-page .partner-selection>h1{font-size:18px;font-weight:500;margin:0 0 4px}
+.ui-status{font-size:12px;line-height:1.8;color:#89747d;margin:0 0 8px;min-height:1px}
+.ui-status:empty{display:none}
+.ui-page .partner-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin:16px 0 0}
+.ui-page .partner-cards:empty{display:none}
+.ui-page .partner-card{display:flex;align-items:center;gap:14px;padding:12px 14px;border-radius:14px;box-shadow:none;font:inherit;min-width:0}
+.ui-page .partner-card img{width:56px;height:56px;flex-shrink:0;border-radius:50%;margin:0;object-fit:cover;background:#f0eae6}
+.ui-page .partner-card[aria-current]{border-color:var(--pink);background:var(--soft)}
+.ui-page .partner-card>.partner-meta{display:flex;flex-direction:column;gap:2px;min-width:0;margin:0}
+.ui-page .partner-meta small{margin:0}
+.partner-meta strong{font-size:14px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.partner-meta small{font-size:10px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.partner-summary{font-size:11px;line-height:1.6;color:#8b8186;margin-top:4px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.character-manage-link{display:inline-block;margin-top:18px;color:#a24869;font-size:12px}
+
+/* Sidebar: image, name, handle, then affinity. Long profiles scroll inside the sidebar. */
+.ui-page .sidebar{min-height:0;overflow-y:auto;gap:0}
+.ui-page .portrait{height:200px;flex-shrink:0}
+.ui-page .intro{padding-top:18px}
+.ui-page .intro h1{font-size:20px;letter-spacing:1px;line-height:1.5;margin:0;overflow-wrap:anywhere}
+.partner-handle{font-size:11px;color:var(--muted);margin:4px 0 0;overflow-wrap:anywhere}
+.ui-page .sidebar .affinity{flex-shrink:0;margin-top:18px;padding:14px 16px;background:var(--soft);border-radius:12px}
+.ui-page .description{font-size:11px;line-height:1.9;margin:18px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:6;-webkit-box-orient:vertical;overflow:hidden;flex-shrink:0}
+.ui-page .profile-button{flex-shrink:0;margin-top:18px}
+.ui-profile-badge{color:#a14067;font-size:10px;text-align:center;margin:8px 0 0}
+
+/* Chat */
+.ui-page .chat-header{height:auto;min-height:80px;padding:14px 38px}
+.ui-page .chat-title{min-width:0}
+.ui-page .chat-title h2{outline:0;gap:14px;flex-wrap:wrap}
+.ui-page .chat-title h2 .partner-name{overflow-wrap:anywhere}
+.ui-page .chat-header .icon-button:disabled{opacity:.4}
+.ui-page .bubble{white-space:pre-wrap}
+.ui-page .message.ai>div{min-width:0;max-width:min(560px,100%)}
+.ui-page .message.user>.bubble,.ui-page .message.user>div{max-width:min(560px,100%)}
+.ui-page .date-divider{margin:8px 0 24px}
+.message.dm .bubble{background:#f7fafc;border:1px dashed #c9d6e2}
+.message.user.dm .bubble{background:#f1f6fb;border:1px dashed #bccddd}
+.dm-tag{display:block;font-size:9px;letter-spacing:1px;color:#6e8aa6;margin:0 0 4px 4px}
+.message.user .dm-tag{text-align:right;margin:0 4px 4px 0}
+.sender .dm-tag{display:inline;margin:0 0 0 8px}
+.dm-more{display:block;margin:0 auto 20px;border:1px solid #d99aaf;border-radius:7px;background:white;color:#a24869;padding:8px 12px;font:inherit;font-size:11px;cursor:pointer}
+.dm-status{font-size:11px;line-height:1.7;color:#a33050;text-align:center;margin:0 0 16px}
+.message-state{font-size:9px;display:block;text-align:right;color:#b27a8c;margin-top:5px}
+.ui-empty{color:#9a8a90;font-size:12px;text-align:center;margin:40px 0}
+.ui-typing{font-size:11px;color:#9a7b86;padding:8px 38px;flex-shrink:0}
+.new-message{align-self:center;margin:4px;flex-shrink:0}
+.game-ending{margin:10px 38px;padding:14px 18px;border-radius:12px;background:#fff3f6;color:#954665;font-size:12px;line-height:1.8;flex-shrink:0}
+.game-restart{align-self:center;margin:4px 0 16px;padding:10px 18px;border:1px solid #d99aaf;border-radius:8px;background:white;color:#a24869;font:inherit;font-size:12px;cursor:pointer;flex-shrink:0}
+.ui-page .composer-area{flex-shrink:0;padding:14px 38px 12px}
+.ui-page .composer{align-items:flex-end}
+.ui-page .composer textarea{flex:1;width:100%;min-width:0;max-height:140px;min-height:40px;resize:none;border:0;background:transparent;font:inherit;font-size:13px;line-height:1.6;outline:0;padding:9px 0;color:#30323a}
+.ui-page .send-button{flex-shrink:0}
+.ui-page .send-button:disabled{opacity:.45;cursor:default}
+.ui-page .send-button:not(:disabled){cursor:pointer}
+.composer-count{display:flex;justify-content:space-between;gap:12px;font-size:9px;color:#99858c;margin:8px 0 0}
+.ui-page .composer-area>p{margin-top:6px}
+
+/* Profile dialog: image, name, handle, affinity, then the long profile and secrets */
+.ui-page .profile-content h2{font-size:22px;margin:0;overflow-wrap:anywhere}
+.ui-page .profile-content .partner-handle{margin-bottom:18px}
+.ui-page .secret-section{margin-top:24px}
+.bio-section{margin-top:24px}
+.bio-section h3,.ui-page .secret-section h3{font-size:14px;font-weight:500;margin:0 0 8px}
+.ui-page .profile-bio{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.ui-page .profile-bio.clamped{display:-webkit-box;-webkit-line-clamp:8;-webkit-box-orient:vertical;overflow:hidden}
+.bio-toggle{margin-top:8px;border:0;background:none;padding:4px 0;color:#a24869;font:inherit;font-size:11px;cursor:pointer}
+.ui-page .secret-card p{white-space:pre-wrap}
+
+/* Secret popup */
+.ui-update{height:fit-content!important;width:360px!important;max-width:calc(100% - 40px)!important;max-height:calc(100dvh - 40px)!important;margin:auto!important;border:0!important;padding:0!important;background:transparent!important;overflow:visible!important;border-radius:24px!important}
+.ui-update::backdrop{background:#24182952;backdrop-filter:none}
+
+@media(max-width:1100px) and (min-width:701px){
+  .ui-page .chat-header{padding:14px 24px}
+  .ui-page .composer-area{padding:12px 24px}
+  .ui-typing{padding:8px 24px}
+  .game-ending{margin:10px 24px}
+}
+@media(max-width:800px){.ui-page .brand-caption{display:none}}
+@media(max-width:700px){
+  .ui-page .brand{padding:0 12px;gap:8px}
+  .ui-page .brand a{gap:6px}
+  .brand-actions{gap:6px}
+  .ui-switch,.ui-account summary{font-size:10px;padding:7px 8px}
+  .ui-error{margin:0 12px 8px}
+  .ui-page .partner-selection{margin-top:4px;padding:0 16px}
+  .ui-page .partner-cards{grid-template-columns:1fr;gap:8px}
+  .ui-page .partner-card img{width:48px;height:48px}
+  .ui-page .chat-header{min-height:68px;padding:10px 16px}
+  .ui-page .mobile-relation{font-size:10px}
+  .ui-page .message.ai>div{max-width:calc(100% - 65px)}
+  .ui-typing{padding:8px 16px}
+  .game-ending{margin:8px 16px}
+  .ui-page .composer-area{padding:8px 16px max(10px,env(safe-area-inset-bottom))}
+  .ui-page .composer textarea{font-size:16px}
+  .composer-count span:first-child{display:none}
+}
+@media(prefers-reduced-motion:no-preference){
+  .ui-page .message.just-arrived{animation:ui-arrive .45s ease-out}
+  .ui-update[open]{animation:ui-popup .5s ease-out}
+  @keyframes ui-arrive{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+  @keyframes ui-popup{from{opacity:0;transform:translateY(16px) scale(.94)}to{opacity:1;transform:translateY(0) scale(1)}}
+}
+.ui-page .mobile-secret-badge{right:12px;bottom:4px}
+
+/* Three relationship axes under the overall meter */
+.relationship-axes{display:grid;gap:6px;margin-top:12px;padding-top:10px;border-top:1px solid #f1e3e7}
+.relationship-axes .axis{display:grid;grid-template-columns:4.5em minmax(0,1fr) 2em;align-items:center;gap:8px;font-size:10px;color:var(--muted)}
+.relationship-axes .axis b{font-weight:500;color:#a57b87;text-align:right;font-size:11px}
+.relationship-axes progress{appearance:none;border:0;width:100%;height:3px;border-radius:3px;overflow:hidden;display:block;margin:0}
+.relationship-axes progress::-webkit-progress-bar{background:#f0e7e9}
+.relationship-axes [data-axis="affection"] progress::-webkit-progress-value{background:#e0a2b3}
+.relationship-axes [data-axis="trust"] progress::-webkit-progress-value{background:#8fb3a3}
+.relationship-axes [data-axis="romance"] progress::-webkit-progress-value{background:#c97a95}
+.relationship-axes [data-axis="affection"] progress::-moz-progress-bar{background:#e0a2b3}
+.relationship-axes [data-axis="trust"] progress::-moz-progress-bar{background:#8fb3a3}
+.relationship-axes [data-axis="romance"] progress::-moz-progress-bar{background:#c97a95}
+.relationship-axes .axis-change{font-size:10px;color:#a57988;margin:4px 0 0;line-height:1.6}
+.axis-detail{margin-top:10px;font-size:11px;color:var(--muted)}
+.axis-detail summary{cursor:pointer;color:#a57b87}
+.axis-detail p{margin:8px 0 4px;line-height:1.7;color:var(--text)}
+.axis-detail ul{margin:0;padding-left:1.2em;line-height:1.7}
+.axis-detail q{display:block;color:#9a8f93;font-size:10px}
+
+/* Characters not opened yet through Bluesky DMs */
+.ui-page .partner-card.locked{cursor:not-allowed;background:#faf7f6;align-items:flex-start}
+.ui-page .partner-card.locked img{filter:grayscale(.7);opacity:.7}
+.partner-lock{display:block;font-size:11px;line-height:1.6;color:#a2667a;margin-top:6px;white-space:normal;text-align:left}
+.partner-lock-progress{appearance:none;border:0;width:100%;height:3px;border-radius:3px;overflow:hidden;display:block;margin:6px 0 2px}
+.partner-lock-progress::-webkit-progress-bar{background:#f0e7e9}
+.partner-lock-progress::-webkit-progress-value{background:var(--pink)}
+.partner-lock-progress::-moz-progress-bar{background:var(--pink)}

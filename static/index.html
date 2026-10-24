@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#FAF8F7">
+  <title>Re:Al — お話しする相手を選ぶ</title>
+  <link rel="stylesheet" href="hiyori-styles.css">
+  <link rel="stylesheet" href="hiyori-dynamic.css">
+  <link rel="stylesheet" href="hiyori-ui.css">
+  <link rel="stylesheet" href="brand.css">
+  <script src="hiyori-config.js" defer></script>
+  <script src="hiyori-engine.js" defer></script>
+  <script src="hiyori-ui-config.js" defer></script>
+  <script src="hiyori-service.js" defer></script>
+  <script src="hiyori-affection.js" defer></script>
+  <script src="hiyori-app.js" defer></script>
+</head>
+<body class="ui-page">
+  <header class="brand">
+    <a href="/" aria-label="Re:Al ホーム"><img class="brand-logo" src="/real-logo.png" alt="Re:Al Love Simulator"><span class="brand-caption">心がほどける、ふたりの時間。</span></a>
+    <div class="brand-actions">
+      <button class="ui-switch" type="button" hidden>相手を選び直す</button>
+      <details class="ui-account"><summary aria-label="アカウントのメニュー">ログイン中</summary><div class="ui-account-body"><strong>認証済みアカウント</strong><p class="account-handle"></p><a class="ui-manage" href="/characters">キャラクター管理 ↗</a><button class="ui-logout" type="button">ログアウト</button></div></details>
+    </div>
+  </header>
+  <div class="ui-error" role="alert" hidden></div>
+  <section class="partner-selection" aria-labelledby="selection-title">
+    <h1 id="selection-title">誰とお話ししますか？</h1>
+    <p class="ui-status" role="status"></p>
+    <div class="partner-cards"></div>
+    <a class="character-manage-link" href="/characters">キャラクターを管理する ↗</a>
+  </section>
+  <main class="app" hidden>
+    <aside class="sidebar" aria-label="キャラクターの紹介">
+      <img class="portrait" data-partner-image src="avatar-placeholder.svg" alt="">
+      <div class="intro"><h1 class="partner-name"></h1><p class="partner-handle"></p></div>
+      <section class="affinity" aria-label="好感度"><div class="affinity-heading"><span>好感度</span><span><strong>0</strong> / 100</span></div><progress value="0" max="100"></progress><p></p><div class="relationship-axes" hidden><div class="axis" data-axis="affection"><span>好意</span><progress max="100" value="0"></progress><b>0</b></div><div class="axis" data-axis="trust"><span>信頼</span><progress max="100" value="0"></progress><b>0</b></div><div class="axis" data-axis="romance"><span>恋愛感情</span><progress max="100" value="0"></progress><b>0</b></div><p class="axis-change" hidden></p></div></section>
+      <p class="description"></p>
+      <button class="profile-button" type="button" data-open-profile><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/></svg>プロフィールを見る<span>↗</span></button>
+      <p class="ui-profile-badge" hidden></p>
+    </aside>
+    <section class="chat" aria-label="チャット">
+      <header class="chat-header"><img src="avatar-placeholder.svg" alt="" class="avatar header-avatar" data-partner-image><div class="chat-title"><h2 tabindex="-1"><span class="partner-name"></span><span class="desktop-status"><i></i> あなたとお話し中</span></h2><span class="mobile-relation"></span><p class="desktop-subtitle">この会話はBlueskyのDMに反映されます。</p></div><span class="mobile-secret-badge" hidden></span><button class="icon-button" type="button" data-open-profile aria-label="プロフィールを見る"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/></svg></button></header>
+      <div class="messages" aria-live="polite"></div>
+      <button class="new-message" type="button" hidden>新しいメッセージ ↓</button>
+      <div class="ui-typing" hidden>返信を待っています…</div>
+      <div class="game-ending" hidden></div>
+      <button class="game-restart" type="button" hidden>新しい物語を始める</button>
+      <footer class="composer-area"><div class="composer"><textarea rows="1" aria-label="メッセージ"></textarea><button class="send-button" type="button" aria-label="メッセージを送信" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 14-7-5 14-3-6-6-1Z"/><path d="m11 13 8-8"/></svg></button></div><div class="composer-count"><span>Enterで送信 · Shift+Enterで改行</span><span class="count"></span></div><p>あなたの送信とAIの返信はBluesky DMに記録されます</p></footer>
+    </section>
+  </main>
+  <dialog id="profile" aria-labelledby="profile-title"><div class="profile-top"><span>PROFILE</span><button class="icon-button" id="close-profile" type="button" aria-label="プロフィールを閉じる">×</button></div><div class="profile-content"><img class="profile-portrait" data-partner-image src="avatar-placeholder.svg" alt=""><h2 id="profile-title" class="partner-name"></h2><p class="partner-handle"></p><section class="affinity" aria-label="好感度"><div class="affinity-heading"><span>好感度</span><span><strong>0</strong> / 100</span></div><progress value="0" max="100"></progress><p></p><div class="relationship-axes" hidden><div class="axis" data-axis="affection"><span>好意</span><progress max="100" value="0"></progress><b>0</b></div><div class="axis" data-axis="trust"><span>信頼</span><progress max="100" value="0"></progress><b>0</b></div><div class="axis" data-axis="romance"><span>恋愛感情</span><progress max="100" value="0"></progress><b>0</b></div><p class="axis-change" hidden></p></div><details class="axis-detail" hidden><summary>前回の判定の内訳</summary><p class="axis-reason"></p><ul></ul></details></section><section class="secret-section" hidden><h3>ふたりだけのヒミツ</h3><div class="secret-list"></div></section><section class="bio-section"><h3>プロフィール</h3><p class="profile-bio clamped"></p><button class="bio-toggle" type="button" hidden>続きを読む</button></section><p class="profile-note">会話本文はBluesky DMから取得します。好感度は好意・信頼・恋愛感情の3つで、ReAl でも Bluesky のDMでも上がります。進行と判定の記録はこのPCに保存されます。</p></div></dialog>
+  <dialog class="ui-update" aria-labelledby="ui-update-title"><section class="update-card"><img alt=""><div class="update-key" aria-hidden="true">♡</div><h2 id="ui-update-title"></h2><p class="update-description"></p><button class="update-read" type="button">ヒミツを見る</button><button class="update-later" type="button">あとで</button></section></dialog>
+  <div class="live-update" role="status"></div>
+</body>
+</html>

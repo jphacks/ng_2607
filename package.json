@@ -1,0 +1,10 @@
+{
+  "name": "real-love-simulator",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.19.0" },
+  "dependencies": {
+    "@atproto/api": "^0.26.0",
+    "@atproto/oauth-client-node": "^0.5.10"
+  }
+}

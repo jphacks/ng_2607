@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#FAF8F7">
+  <title>Re:Al — ログイン</title>
+  <link rel="stylesheet" href="hiyori-styles.css">
+  <link rel="stylesheet" href="hiyori-login.css">
+  <link rel="stylesheet" href="brand.css">
+  <script src="hiyori-login.js" defer></script>
+</head>
+<body class="login-page">
+  <header class="brand"><a href="/login"><img class="brand-logo" src="/real-logo.png" alt="Re:Al Love Simulator"><span class="brand-caption">心がほどける、ふたりの時間。</span></a><span class="login-demo-tag">AT Protocol OAuth</span></header>
+  <main class="login-layout">
+    <section class="login-story" aria-labelledby="welcome-title">
+      <span class="eyebrow">A LITTLE CLOSER, EVERY DAY</span>
+      <h1 id="welcome-title">今日のあなたを、<br>聞かせてほしい。</h1>
+      <p>何気ない話から、少しずつ。<br>心がほどけるひとときを、あなたのペースで。</p>
+      <div class="login-portraits" aria-label="会話のイメージ"><figure><img src="assets-karesi.png" alt="会話のイメージ画像"><figcaption>会話のイメージ <span>穏やかな時間</span></figcaption></figure><figure><img src="assets-kanojo.png" alt="会話のイメージ画像"><figcaption>会話のイメージ <span>自然体の時間</span></figcaption></figure></div>
+      <div class="login-note">少し話したい日も、ゆっくり過ごしたい日も。</div>
+    </section>
+    <section class="login-card" aria-labelledby="login-title">
+      <span class="login-kicker">WELCOME TO RE:AL</span>
+      <h2 id="login-title">ふたりの時間を、ここから。</h2>
+      <p class="login-lead">Blueskyのアカウントで認証して、<br>ふたりの物語を始めましょう。</p>
+      <form id="login-form">
+        <label for="handle">Blueskyのハンドル <span>必須</span></label>
+        <div class="handle-input"><span aria-hidden="true">@</span><input id="handle" name="handle" type="text" maxlength="253" placeholder="example.bsky.social" autocomplete="username" required autocapitalize="none" spellcheck="false" aria-describedby="handle-help"></div>
+        <p id="handle-help">ログインするアカウントのハンドルを入力してください。</p>
+        <button class="bluesky-login" type="submit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 11C8 4 2 2 2 7c0 4 3 5 7 5-6 1-4 7 0 5l3-4 3 4c4 2 6-4 0-5 4 0 7-1 7-5 0-5-6-3-10 4Z"/></svg>Blueskyでログイン <span>OAuth</span></button>
+        <p id="login-error" role="alert" hidden></p>
+      </form>
+      <aside class="login-disclosure"><strong>認証について</strong><p>パスワードはこのアプリに入力しません。AT Protocolの認証画面でログインします。</p><p>チャットの発言はBluesky DMに送信されます。好感度などの進行はこのPCに保存されます。</p></aside>
+      
+    </section>
+  </main>
+  <footer class="login-footer">Re:Al · あなたと架空キャラクターの物語</footer>
+</body>
+</html>
