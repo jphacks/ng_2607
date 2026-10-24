@@ -84,6 +84,61 @@ class RelationshipMathTest(unittest.TestCase):
         self.assertEqual(rel.overall({"affection": 70, "trust": 60, "romance": 50}), 61)
 
 
+class StageTest(unittest.TestCase):
+    def test_stages_follow_the_secret_levels(self):
+        def scores(total):  # affection=trust=romance gives overall == total
+            return {"affection": total, "trust": total, "romance": total}
+        self.assertEqual([rel.stage_index(scores(v)) for v in (0, 24, 25, 49, 50, 74, 75, 100)], [0, 0, 1, 1, 2, 2, 3, 3])
+        self.assertEqual(tuple(rel.STAGE_MINIMUMS[1:]), tuple(server.SECRET_LEVELS[:3]))
+        self.assertEqual(rel.stage_info(scores(10), lover=True)["name"], "恋人")
+
+    def test_confession_is_judged_only_at_the_last_stage(self):
+        def update(total, score=1.0):
+            return {"after": {"affection": total, "trust": total, "romance": total},
+                    "breakdown": [{"condition": rel.CONFESSION, "score": score}]}
+        self.assertEqual(rel.confession_outcome(update(80), lover=False), "judge")
+        self.assertEqual(rel.confession_outcome(update(80, 0.3), lover=False), "judge")  # The judge decides if it is clear.
+        self.assertIsNone(rel.confession_outcome(update(80, 0.2), lover=False))
+        self.assertEqual(rel.confession_outcome(update(60), lover=False), "decline")
+        self.assertIsNone(rel.confession_outcome(update(60, 0.4), lover=False))
+        self.assertIsNone(rel.confession_outcome(update(80), lover=True))  # Already lovers.
+        accepting = rel.reply_guidance(update(80)["after"], confession="accept")
+        self.assertIn("告白を受け入れて恋人になる", accepting)
+        self.assertIn("「恋人」", accepting)
+        declining = rel.reply_guidance(update(60)["after"], confession="decline")
+        self.assertIn("やんわり受け流す", declining)
+        self.assertIn("「なかよし」", declining)
+
+    def test_confession_judge_prompt_parse_and_rejection_penalty(self):
+        scores = {"affection": 90, "trust": 85, "romance": 80}
+        prompt = rel.confession_messages({"name": "n", "profile": "p"}, scores, "付き合って", [(True, "こんにちは")], [])
+        self.assertIn("総合好感度は 86/100", prompt[0]["content"])
+        self.assertIn("90以上: 突然の告白でも", prompt[0]["content"])
+        self.assertIn("プレイヤー: こんにちは", prompt[1]["content"])
+        self.assertEqual(rel.parse_confession('{"clear": false, "accept": true, "reason": "冗談"}'),
+                         {"clear": False, "accept": False, "reason": "冗談"})  # Never accepted when unclear.
+        self.assertIsNone(rel.parse_confession('{"clear": "yes"}'))
+        before = {"affection": 80.0, "trust": 75.0, "romance": 70.0}
+        update = {"before": before, "delta": {"affection": 2.0, "trust": 0.0, "romance": 1.0}}
+        rejected = rel.reject_confession(update)
+        self.assertEqual(rejected["after"], {"affection": 62.0, "trust": 55.0, "romance": 51.0})
+        self.assertEqual(rel.overall(before) - rejected["overallAfter"], 19)  # -20 penalty after this turn's +1.
+
+    def test_stage_rules_are_in_the_guidance_and_validated(self):
+        custom = [dict(stage) for stage in rel.DEFAULT_STAGES]
+        custom[0]["call"] = "苗字にさん付け"
+        stages = rel.parse_stages(json.dumps(custom, ensure_ascii=False))
+        guidance = rel.reply_guidance(dict(START), stages)
+        self.assertIn("段階: 1/4「知り合い」", guidance)
+        self.assertIn("- 相手の呼び方: 苗字にさん付け", guidance)
+        self.assertEqual(rel.parse_stages(""), rel.DEFAULT_STAGES)
+        with self.assertRaises(ValueError):
+            rel.parse_stages(json.dumps(custom[:4], ensure_ascii=False))
+        custom[2]["name"] = ""
+        with self.assertRaises(ValueError):
+            rel.parse_stages(json.dumps(custom, ensure_ascii=False))
+
+
 class RelationshipGameTest(ServerFixture):
     def start_game(self):
         self.connect_character()
@@ -180,6 +235,75 @@ class RelationshipGameTest(ServerFixture):
         self.assertIn("キャラのプリン", system)
         self.assertIn("プレイヤー が最近 Bluesky に投稿したこと", system)
         self.assertIn("プレイヤーの猫", system)
+
+    def confess_with(self, axes, verdict=None):
+        """One confession turn. verdict: what the confession judge answers. Returns the response,
+        the reply prompt, whether they became lovers, and how many times the judge was asked."""
+        self.start_game()
+        with server.database() as db:
+            server.edit_relationship(db, 1, DID, "example.bsky.social", axes, True, [])
+        prompts, judged = [], []
+        reply = fake_ai("うれしい", [{"condition": "confess_sincerely", "score": 1.0, "evidence": "好きです"}])
+
+        def ai(messages, json_mode=False, temperature=0.75, model=None, timeout=120):
+            prompts.append(messages)
+            if "告白判定係" in messages[0]["content"]:
+                judged.append(messages)
+                return json.dumps(verdict, ensure_ascii=False)
+            return reply(messages, json_mode, temperature)
+        with patch.object(server, "oauth_call", side_effect=FakeDm()), patch.object(server, "call_ai", side_effect=ai):
+            status, data = self.chat("ずっと好きでした。付き合ってください")
+        self.assertEqual(status, 200)
+        with server.database() as db:
+            return data, prompts[-1][0]["content"], server.relationship_state(db, 1, DID)["lover"], len(judged)
+
+    def test_accepted_confession_at_the_last_stage_makes_lovers(self):
+        data, prompt, lover, judged = self.confess_with({"affection": 85, "trust": 80, "romance": 70},
+                                                        {"clear": True, "accept": True, "reason": "流れが自然"})
+        self.assertEqual(judged, 1)
+        self.assertIn("告白を受け入れて恋人になる", prompt)
+        self.assertTrue(lover)
+        self.assertEqual(data["game"]["relationship"], "恋人")
+        self.assertEqual((data["relationshipUpdate"]["confession"], data["relationshipUpdate"]["confessionReason"]),
+                         ("accept", "流れが自然"))
+
+    def test_rejected_confession_lowers_the_relationship_by_about_20(self):
+        data, prompt, lover, _ = self.confess_with({"affection": 80, "trust": 75, "romance": 70},
+                                                   {"clear": True, "accept": False, "reason": "唐突すぎる"})
+        self.assertFalse(lover)
+        update = data["relationshipUpdate"]
+        self.assertEqual(update["confession"], "reject")
+        self.assertLessEqual(update["overallAfter"], update["overallBefore"] - 15)  # -20 penalty plus this turn's change.
+        self.assertIn("恋人にはなれない", prompt)
+        self.assertIn("「なかよし」", prompt)  # The reply already follows the lowered stage.
+        self.assertEqual(data["game"]["axes"], update["after"])
+
+    def test_ambiguous_confession_is_not_judged(self):
+        data, prompt, lover, _ = self.confess_with({"affection": 85, "trust": 80, "romance": 70},
+                                                   {"clear": False, "accept": False, "reason": "冗談に近い"})
+        self.assertFalse(lover)
+        self.assertEqual(data["relationshipUpdate"]["confession"], "unclear")
+        self.assertIn("はっきりしない", prompt)
+        self.assertGreater(data["relationshipUpdate"]["overallAfter"], 75)  # No penalty.
+
+    def test_confession_before_the_last_stage_is_turned_aside_without_judging(self):
+        data, prompt, lover, judged = self.confess_with({"affection": 60, "trust": 50, "romance": 40})
+        self.assertEqual(judged, 0)
+        self.assertIn("やんわり受け流す", prompt)
+        self.assertFalse(lover)
+
+    def test_character_stages_are_saved_and_defaults_stay_empty(self):
+        custom = [dict(stage) for stage in rel.DEFAULT_STAGES]
+        custom[3]["tone"] = "おっとりした敬語"
+        with patch.object(server, "xrpc", return_value={"did": CHAR_DID, "handle": "character.bsky.social"}):
+            status, saved = invoke("do_POST", "/api/characters/save", {
+                "id": 1, "profile": "おっとり", "handle": "character.bsky.social", "relationshipStages": custom})
+            self.assertEqual(status, 200)
+            self.assertEqual(saved["character"]["relationshipStages"][3]["tone"], "おっとりした敬語")
+            invoke("do_POST", "/api/characters/save", {
+                "id": 1, "profile": "おっとり", "handle": "character.bsky.social", "relationshipStages": rel.DEFAULT_STAGES})
+        with server.database() as db:
+            self.assertEqual(db.execute("SELECT relationship_stages FROM characters WHERE id=1").fetchone()[0], "")
 
     def test_evaluation_can_use_a_separate_model(self):
         self.start_game()

@@ -4,6 +4,32 @@ async function api(path, options = {}) { const response = await fetch(path, { cr
 function post(path, body) { return api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); }
 const SECRET_LEVELS = [25, 50, 75, 100];
 function fillSecrets(secrets = []) { for (const level of SECRET_LEVELS) { const item = secrets.find(secret => secret.level === level); $(`secret-title-${level}`).value = item?.title || ''; $(`secret-content-${level}`).value = item?.content || ''; } }
+const STAGE_FIELDS = { name: '段階の名前', call: '相手の呼び方', tone: '口調', allowed: 'してよいこと', forbidden: 'しないこと' };
+function stageTitle(index) {
+  const minimums = state.stageMinimums || [0, 25, 50, 75];
+  if (index >= minimums.length) return '恋人 (4段階目で告白を受け入れたあと)';
+  return `段階${index + 1} (総合 ${minimums[index]}〜${index + 1 < minimums.length ? minimums[index + 1] - 1 : 100})`;
+}
+function fillStages(stages = state.defaultStages || []) {
+  $('stage-editor').replaceChildren(...stages.map((stage, index) => {
+    const card = textNode('div', '', 'stage-card' + (index >= (state.stageMinimums || [0, 25, 50, 75]).length ? ' lover' : ''));
+    card.append(textNode('strong', stageTitle(index)));
+    for (const [key, label] of Object.entries(STAGE_FIELDS)) {
+      const field = textNode('label', label);
+      const input = document.createElement(key === 'name' ? 'input' : 'textarea');
+      if (key !== 'name') input.rows = 2;
+      input.maxLength = 300; input.value = stage[key] || ''; input.dataset.stage = index; input.dataset.key = key;
+      field.append(input); card.append(field);
+    }
+    return card;
+  }));
+}
+function readStages() {
+  const stages = (state.defaultStages || []).map(() => ({}));
+  for (const input of $('stage-editor').querySelectorAll('[data-stage]')) stages[Number(input.dataset.stage)][input.dataset.key] = input.value;
+  return stages;
+}
+$('reset-stages').addEventListener('click', () => { fillStages(); notice('標準の振る舞いを入れました。保存すると反映されます。'); });
 function readSecrets() { return SECRET_LEVELS.map(level => ({ level, title: $(`secret-title-${level}`).value, content: $(`secret-content-${level}`).value })); }
 async function loadSecrets(id) { fillSecrets(); try { const { secrets } = await api(`/api/characters/${id}/secrets`); if (state.selectedId === id) fillSecrets(secrets); } catch (error) { if (state.selectedId === id) notice(error.message, true); } }
 function notice(message, error = false) { $('editor-notice').textContent = message; $('editor-notice').classList.toggle('error', error); }
@@ -28,6 +54,7 @@ function select(id) {
   $('character-profile-input').value = character.profile;
   $('character-handle-input').value = character.handle;
   $('relationship-weights').value = character.relationshipWeights || '';
+  fillStages(character.relationshipStages);
   $('profile-length').textContent = character.profile.length.toLocaleString('ja-JP');
   renderIdentity(character.name, character.iconUrl);
   $('delete-character').classList.remove('hidden'); $('handle-result').textContent = character.atDid ? `公開アカウントを確認: ${character.atDid}` : 'ハンドルを保存すると公開プロフィールを照合できます。'; $('handle-result').className = character.atDid ? 'field-note ok' : 'field-note';
@@ -38,12 +65,12 @@ function select(id) {
 function newCharacter() {
   state.selectedId = null;
   $('editor-mode').textContent = 'NEW CHARACTER'; $('editor-title').textContent = 'キャラクターを作成';
-  $('character-form').reset(); fillSecrets(); $('profile-length').textContent = '0'; renderIdentity();
+  $('character-form').reset(); fillSecrets(); fillStages(); $('profile-length').textContent = '0'; renderIdentity();
   $('delete-character').classList.add('hidden'); $('handle-result').textContent = 'ハンドルを入力すると名前とアイコンを確認できます。'; $('handle-result').className = 'field-note';
   updateConnectButton(); $('connect-character').textContent = '保存してOAuth認証へ'; $('disconnect-character').classList.add('hidden'); $('account-preview').classList.add('hidden'); $('automation-panel').classList.add('hidden');
   notice('入力した内容はこのPC内の非公開DBに保存します。'); renderList();
 }
-async function load(preferredId = null) { try { const data = await api('/api/characters'); state.characters = data.characters; renderList(); const callback = new URLSearchParams(location.search); const requested = preferredId || Number(callback.get('characterId')); if (state.characters.length) select(state.characters.find(item => item.id === requested)?.id || state.characters[0].id); else newCharacter(); if (callback.get('oauth') === 'connected') notice('OAuth接続が完了しました。DMを読み、AIの返信を送信できます。'); } catch (error) { notice(error.message, true); } }
+async function load(preferredId = null) { try { const data = await api('/api/characters'); state.characters = data.characters; state.defaultStages = data.defaultStages; state.stageMinimums = data.stageMinimums; renderList(); const callback = new URLSearchParams(location.search); const requested = preferredId || Number(callback.get('characterId')); if (state.characters.length) select(state.characters.find(item => item.id === requested)?.id || state.characters[0].id); else newCharacter(); if (callback.get('oauth') === 'connected') notice('OAuth接続が完了しました。DMを読み、AIの返信を送信できます。'); } catch (error) { notice(error.message, true); } }
 
 function clearAccount() {
   state.postCursor = state.convoCursor = state.messageCursor = state.convoId = null;
@@ -129,19 +156,81 @@ const SCOPE_LABELS = { reply: 'DMの自動返信', post: '自動投稿', story: 
 const POST_STATUS = { posted: '投稿済み', manual: '手動投稿', missed: '見送り' };
 function automationNotice(message, error = false) { $('automation-notice').textContent = message; $('automation-notice').classList.toggle('error', error); }
 const AXIS_NAMES = { affection: '好意', trust: '信頼', romance: '恋愛感情' };
+function memoryRow(kinds, memory = { kind: 'event', text: '' }) {
+  const row = textNode('div', '', 'memory-row');
+  const kind = document.createElement('select');
+  for (const [value, label] of Object.entries(kinds)) { const option = textNode('option', label); option.value = value; kind.append(option); }
+  kind.value = memory.kind;
+  const text = document.createElement('input'); text.type = 'text'; text.maxLength = 200; text.value = memory.text; text.placeholder = '覚えていること';
+  const remove = textNode('button', '削除', 'text-button'); remove.type = 'button'; remove.addEventListener('click', () => row.remove());
+  row.append(kind, text, remove);
+  return row;
+}
+function relationshipEditor(item) {
+  const details = document.createElement('details'); details.className = 'relationship-edit';
+  details.append(textNode('summary', 'ステータスを編集'));
+  const axes = textNode('div', '', 'axis-inputs');
+  for (const [axis, name] of Object.entries(AXIS_NAMES)) {
+    const label = textNode('label', name);
+    const input = document.createElement('input'); input.type = 'number'; input.min = 0; input.max = 100; input.step = 0.1; input.value = item.axes[axis]; input.dataset.axis = axis;
+    label.append(input); axes.append(label);
+  }
+  const unlock = textNode('label', '', 'unlock-toggle');
+  const unlocked = document.createElement('input'); unlocked.type = 'checkbox'; unlocked.checked = item.unlocked;
+  unlock.append(unlocked, document.createTextNode(' ReAl を解放する'));
+  const loverLabel = textNode('label', '', 'unlock-toggle');
+  const lover = document.createElement('input'); lover.type = 'checkbox'; lover.checked = item.lover;
+  loverLabel.append(lover, document.createTextNode(' 恋人にする (告白を受け入れた状態。好感度に関係なく恋人の振る舞いになります)'));
+  const memories = textNode('div', '', 'memory-list');
+  memories.append(...(item.memories || []).map(memory => memoryRow(state.memoryKinds, memory)));
+  const addMemory = textNode('button', '覚えていることを追加', 'text-button'); addMemory.type = 'button';
+  addMemory.addEventListener('click', () => memories.append(memoryRow(state.memoryKinds)));
+  const save = textNode('button', 'このステータスで保存', 'primary-action'); save.type = 'button';
+  save.addEventListener('click', () => automationAction(save, `@${item.handle || item.did} のステータスを保存しています…`, async id => {
+    const body = { did: item.did, unlocked: unlocked.checked, lover: lover.checked,
+      axes: Object.fromEntries([...axes.querySelectorAll('input')].map(input => [input.dataset.axis, Number(input.value)])),
+      memories: [...memories.querySelectorAll('.memory-row')].map(row => ({ kind: row.querySelector('select').value, text: row.querySelector('input').value.trim() })).filter(memory => memory.text) };
+    const { relationships } = await post(`/api/characters/${id}/relationship`, body);
+    if (state.selectedId !== id) return;
+    renderRelationships(relationships, state.automationSettings); automationNotice(`@${item.handle || item.did} のステータスを保存しました。次の会話からこの値で続きます。`);
+  }));
+  const reset = textNode('button', '関係をリセット', 'text-button danger-text'); reset.type = 'button';
+  reset.addEventListener('click', () => {
+    if (!confirm(`@${item.handle || item.did} との好感度・解放状態・覚えていること・判定の記録をすべて消して、初対面に戻しますか？`)) return;
+    automationAction(reset, '関係をリセットしています…', async id => {
+      const { relationships } = await post(`/api/characters/${id}/relationship/delete`, { did: item.did });
+      if (state.selectedId !== id) return;
+      renderRelationships(relationships, state.automationSettings); automationNotice(`@${item.handle || item.did} との関係をリセットしました。`);
+    });
+  });
+  const actions = textNode('div', '', 'manual-actions'); actions.append(reset, save);
+  details.append(axes, unlock, loverLabel, textNode('small', '覚えていること (返信と好感度の判定に渡されます)'), memories, addMemory, actions);
+  return details;
+}
 function renderRelationships(relationships, settings) {
   const target = $('dm-relationships');
-  if (!relationships.length) { target.replaceChildren(textNode('p', 'まだDMで話した相手はいません。自動返信で話すと、相手ごとの好感度がここに表示されます。', 'schedule-meta')); return; }
+  if (!relationships.length) { target.replaceChildren(textNode('p', 'まだDMで話した相手はいません。自動返信で話すか、上の「相手を追加」で、相手ごとの好感度がここに表示されます。', 'schedule-meta')); return; }
   target.replaceChildren(...relationships.map(item => {
     const row = textNode('div', '', 'relationship-row');
     const head = textNode('div', '', 'relationship-head');
     head.append(textNode('strong', `@${item.handle || item.did}`), textNode('span', item.unlocked ? 'ReAl 解放済み' : `あと ${Math.max(0, settings.unlock_score - item.overall)}`, item.unlocked ? 'unlock-badge open' : 'unlock-badge'));
     const axes = Object.entries(item.axes).map(([axis, value]) => `${AXIS_NAMES[axis]} ${Math.round(value)}`).join(' · ');
     const delta = item.lastDelta ? ' ／ 前回 ' + Object.entries(item.lastDelta).map(([axis, value]) => `${AXIS_NAMES[axis]} ${value > 0 ? '+' : ''}${value}`).join(' ') : '';
-    row.append(head, textNode('small', `総合 ${item.overall} / ${settings.unlock_score} · ${item.label} · ${axes}${delta}`));
+    const stage = item.lover ? `💞 ${item.stage.name}` : `段階${item.stage.number}「${item.stage.name}」${item.stage.next ? ` (次は総合 ${item.stage.next})` : ' (告白されたら恋人に)'}`;
+    row.append(head, textNode('small', `${stage} · 総合 ${item.overall} / 解放 ${settings.unlock_score} · ${axes}${delta}`), relationshipEditor(item));
     return row;
   }));
 }
+$('add-relationship').addEventListener('click', () => {
+  const handle = $('relationship-handle').value.trim().replace(/^@/, '');
+  if (!handle) { automationNotice('相手のハンドルを入力してください。', true); return; }
+  automationAction($('add-relationship'), `@${handle} を追加しています…`, async id => {
+    const { relationships } = await post(`/api/characters/${id}/relationship`, { handle, axes: state.initialAxes, unlocked: false, memories: [] });
+    if (state.selectedId !== id) return;
+    $('relationship-handle').value = '';
+    renderRelationships(relationships, state.automationSettings); automationNotice(`@${handle} を初期値で追加しました。「ステータスを編集」で値を変えられます。`);
+  });
+});
 function renderAutomationState(settings) { $('automation-state').textContent = `自動返信 ${settings.auto_reply ? 'ON' : 'OFF'} · 自動投稿 ${settings.auto_post ? 'ON' : 'OFF'} · ストーリー ${settings.auto_story ? 'ON' : 'OFF'}`; }
 function renderSchedule(today, now, settings = state.automationSettings) {
   const target = $('today-schedule'); target.replaceChildren();
@@ -179,7 +268,7 @@ async function loadAutomation(character) {
     $('extra-persona').value = settings.extra_persona; $('post-prompt').value = settings.post_prompt; $('schedule-base').value = settings.schedule_base;
     $('require-unlock').checked = settings.require_unlock; $('unlock-score').value = settings.unlock_score;
     $('post-times').value = settings.post_times.join(', '); $('auto-story').checked = settings.auto_story; $('story-times').value = settings.story_times.join(', ');
-    state.automationSettings = settings; $('story-preview').classList.add('hidden');
+    state.automationSettings = settings; state.memoryKinds = data.memoryKinds; state.initialAxes = data.initialAxes; $('story-preview').classList.add('hidden');
     renderAutomationState(settings); renderSchedule(data.today, data.now); renderRelationships(data.relationships, settings);
     const missing = Object.entries(data.missingScopes).filter(([, scopes]) => scopes.length).map(([kind]) => SCOPE_LABELS[kind]);
     $('automation-scope').textContent = missing.length ? `今のOAuth接続には ${missing.join('・')} の権限がありません。上の「保存してOAuthを再接続」から認証し直してください。` : '';
@@ -277,7 +366,7 @@ $('manual-post').addEventListener('input', () => { $('manual-length').textConten
 
 $('new-character').addEventListener('click', newCharacter);
 async function saveCharacter() {
-  const data = await post('/api/characters/save', { id: state.selectedId, profile: $('character-profile-input').value, handle: $('character-handle-input').value, relationshipWeights: $('relationship-weights').value, secrets: readSecrets() });
+  const data = await post('/api/characters/save', { id: state.selectedId, profile: $('character-profile-input').value, handle: $('character-handle-input').value, relationshipWeights: $('relationship-weights').value, relationshipStages: readStages(), secrets: readSecrets() });
   const index = state.characters.findIndex(item => item.id === data.character.id);
   if (index >= 0) state.characters[index] = data.character; else state.characters.push(data.character);
   select(data.character.id);
