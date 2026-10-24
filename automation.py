@@ -219,7 +219,7 @@ def persona_intro(character):
 
 
 def now_line(now):
-    return f"現在の日時: {now:%Y年%-m月%-d日}({WEEKDAYS[now.weekday()]}) {now:%H:%M}"
+    return f"現在の日時: {now.year}年{now.month}月{now.day}日({WEEKDAYS[now.weekday()]}) {now:%H:%M}"
 
 
 def persona(character, settings, *parts, now=None):
