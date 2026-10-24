@@ -158,7 +158,7 @@ class OpenAITest(unittest.TestCase):
             if status != 200:
                 raise server.urllib.error.HTTPError(req.full_url, status, "error", {}, __import__("io").BytesIO(json.dumps(payload).encode()))
             return __import__("io").BytesIO(json.dumps(payload).encode())
-        settings = {"AI_PROVIDER": "openai", "OPENAI_API_KEY": "sk-test", "AI_MODEL": "gpt-test",
+        settings = {"OPENAI_API_KEY": "sk-test", "AI_MODEL": "gpt-test",
                     "AI_BASE_URL": "https://api.openai.com/v1", **config}
         with patch.multiple(server, **settings), patch.object(server, "NO_TEMPERATURE", set()), \
              patch.object(server.urllib.request, "urlopen", side_effect=urlopen):

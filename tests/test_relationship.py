@@ -154,10 +154,32 @@ class RelationshipGameTest(ServerFixture):
         self.assertEqual(loaded["game"]["axes"]["trust"], 20.0)
 
     def test_ai_timeout_is_reported_as_ai_error(self):
-        with patch.object(server.urllib.request, "urlopen", side_effect=TimeoutError("timed out")):
+        with patch.multiple(server, OPENAI_API_KEY="sk-test", AI_MODEL="gpt-test"), \
+             patch.object(server.urllib.request, "urlopen", side_effect=TimeoutError("timed out")):
             with self.assertRaises(RuntimeError) as caught:
                 server.call_ai([{"role": "user", "content": "x"}])
         self.assertIn("AI の応答が時間内", str(caught.exception))
+
+    def test_game_reply_knows_both_sides_posts(self):
+        self.start_game()
+        prompts = []
+        reply = fake_ai("うん")
+
+        def ai(messages, json_mode=False, temperature=0.75, model=None, timeout=120):
+            prompts.append(messages)
+            return reply(messages, json_mode, temperature)
+
+        def posts(did):
+            text = "キャラのプリン" if did == CHAR_DID else "プレイヤーの猫"
+            return [{"uri": "", "date": "2026-10-24 12:00", "text": text, "story": False}]
+        with patch.object(server, "oauth_call", side_effect=FakeDm()), patch.object(server, "call_ai", side_effect=ai), \
+             patch.object(server, "character_posts", side_effect=posts):
+            status, _ = self.chat("こんにちは")
+        self.assertEqual(status, 200)
+        system = prompts[-1][0]["content"]  # The reply prompt comes after the evaluation.
+        self.assertIn("キャラのプリン", system)
+        self.assertIn("プレイヤー が最近 Bluesky に投稿したこと", system)
+        self.assertIn("プレイヤーの猫", system)
 
     def test_evaluation_can_use_a_separate_model(self):
         self.start_game()
@@ -168,10 +190,10 @@ class RelationshipGameTest(ServerFixture):
             models.append(model)
             return reply(messages, json_mode, temperature)
         with patch.object(server, "oauth_call", side_effect=FakeDm()), patch.object(server, "call_ai", side_effect=ai), \
-             patch.object(server, "RELATIONSHIP_MODEL", "qwen3.8:27b"):
+             patch.object(server, "RELATIONSHIP_MODEL", "gpt-judge"):
             status, _ = self.chat("こんにちは")
         self.assertEqual(status, 200)
-        self.assertEqual(models, ["qwen3.8:27b", None])  # Evaluation, then the reply with the default model.
+        self.assertEqual(models, ["gpt-judge", None])  # Evaluation, then the reply with the default model.
 
     def test_weights_are_saved_with_the_character_and_conditions_are_listed(self):
         with patch.object(server, "xrpc", return_value={"did": CHAR_DID, "handle": "character.bsky.social"}):

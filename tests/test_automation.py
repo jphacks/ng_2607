@@ -1,3 +1,4 @@
+import base64
 import datetime
 import json
 import tempfile
@@ -28,6 +29,7 @@ class FakeBluesky:
         self.history = {}
         self.sent = []
         self.posts = []
+        self.stories = []
         self.logs = []
 
     def __call__(self, command):
@@ -47,6 +49,9 @@ class FakeBluesky:
         if op == "createPost":
             self.posts.append(command)
             return {"uri": f"at://{CHAR_DID}/app.bsky.feed.post/{len(self.posts)}", "cid": "cid"}
+        if op == "createStory":
+            self.stories.append(command)
+            return {"uri": f"at://{CHAR_DID}/app.bsky.feed.post/s{len(self.stories)}", "cid": "cid"}
         if op == "scope":
             return {"scope": "atproto"}
         raise AssertionError(op)
@@ -112,7 +117,7 @@ class AutomationTest(unittest.TestCase):
 
     def test_scope_tokens_are_checked(self):
         granted = " ".join(automation.REQUIRED_SCOPES["reply"] + automation.REQUIRED_SCOPES["post"])
-        self.assertEqual(automation.missing_scopes(granted), {"reply": [], "post": []})
+        self.assertEqual(automation.missing_scopes(granted), {"reply": [], "post": [], "story": ["blob:image/*"]})
         self.assertEqual(automation.missing_scopes("atproto")["post"], ["repo:app.bsky.feed.post?action=create"])
 
     def test_auto_reply_answers_game_players_but_leaves_real_turns_to_the_game(self):
@@ -170,11 +175,11 @@ class AutomationTest(unittest.TestCase):
         self.assertEqual(server.RUNNER.status[1]["currentStatus"], "busy")
 
     def test_post_due_posts_latest_and_skips_stale_times(self):
-        self.save(auto_reply=False, auto_post=True)
+        self.save(auto_reply=False, auto_post=True, post_times="15:00, 09:00,11:50")
         now = datetime.datetime.combine(datetime.date.today(), datetime.time(12, 0))
         day = {"date": now.date().isoformat(), "label": "x", "pattern": "毎日",
                "blocks": [{"start": "00:00", "end": "24:00", "activity": "自由", "status": "free", "detail": "のんびり"}],
-               "events": [], "post_times": ["09:00", "11:50", "15:00"], "post_log": [], "dm_log": []}
+               "events": [], "post_log": [], "dm_log": []}
         server.RUNNER.save_day(1, day)
         with server.database() as db:
             target = server.automation_target(db, 1, VISITOR)
@@ -199,7 +204,111 @@ class AutomationTest(unittest.TestCase):
         status, data = invoke("do_POST", "/api/characters/1/automation/post", {"text": "x"}, visitor=OTHER_VISITOR)
         self.assertEqual(status, 401)
 
-    def test_schedule_generation_picks_post_times_in_free_blocks(self):
+    def test_post_prompt_endpoint_shows_the_prompt_parts(self):
+        self.save(auto_reply=False, post_prompt="猫の話をする")
+        with patch.object(server, "call_ai", return_value=schedule_reply()) as ai:
+            status, data = invoke("do_POST", "/api/characters/1/automation/prompt", {})
+        self.assertEqual(status, 200)
+        parts = {part["key"]: part["content"] for part in data["prompt"]}
+        self.assertEqual(parts["topic"], "猫の話をする")
+        self.assertIn("のんびりする", parts["schedule"])  # Today's plan reaches the prompt.
+        self.assertIn("この時刻に合った投稿", parts["request"])
+        self.assertEqual(ai.call_count, 1)  # Only today's schedule is generated; no post text.
+        with patch.object(server, "call_ai", return_value="猫がのびをしていた"):
+            status, data = invoke("do_POST", "/api/characters/1/automation/preview", {})
+        self.assertEqual((status, data["text"]), (200, "猫がのびをしていた"))
+        self.assertEqual(data["prompt"][-1]["key"], "request")
+        status, _ = invoke("do_POST", "/api/characters/1/automation/prompt", {}, visitor=OTHER_VISITOR)
+        self.assertEqual(status, 401)
+
+    def test_post_messages_join_the_parts_like_the_persona(self):
+        character, settings = {"name": "n", "profile": "p"}, {"extra_persona": "語尾は〜だよ", "recent_posts": ["前の投稿"]}
+        now = datetime.datetime(2026, 10, 24, 14, 12)
+        system, user = automation.post_messages(character, settings, ["事実"], now)
+        expected = automation.persona(character, settings, automation.DEFAULT_POST_PROMPT, automation.POST_RULES,
+                                      automation.facts_text(["事実"]), now=now)
+        self.assertEqual(system["content"], expected)
+        self.assertIn("- 前の投稿", user["content"])
+
+    def test_post_and_story_times_are_fixed_settings(self):
+        self.assertEqual(automation.parse_times("21:00、 08:00,08:00", "投稿時刻"), ["08:00", "21:00"])
+        status, data = self.save(post_times="8:00")
+        self.assertEqual(status, 400)
+        self.assertIn("HH:MM", data["error"])
+        status, data = self.save(post_times="", auto_story=True, story_times="20:00")
+        self.assertEqual(status, 200)
+        self.assertEqual((data["settings"]["post_times"], data["settings"]["story_times"]), ([], ["20:00"]))
+        with server.database() as db:
+            target = server.automation_target(db, 1, VISITOR)
+        self.assertTrue(target["auto_story"])
+
+    def story_day(self, now):
+        server.RUNNER.save_day(1, {"date": now.date().isoformat(), "label": "x", "pattern": "毎日",
+                                   "blocks": [{"start": "00:00", "end": "24:00", "activity": "自由", "status": "free", "detail": "公園を散歩"}],
+                                   "events": [], "post_log": [], "story_log": [], "dm_log": []})
+
+    def test_story_due_posts_an_image_with_the_story_tag(self):
+        self.save(auto_reply=False, auto_story=True, story_times="11:50")
+        now = datetime.datetime.combine(datetime.date.today(), datetime.time(12, 0))
+        self.story_day(now)
+        with server.database() as db:
+            target = server.automation_target(db, 1, VISITOR)
+        prompts = []
+
+        def image(prompt):
+            prompts.append(prompt)
+            return b"\xff\xd8jpeg"
+        story = json.dumps({"caption": "いい天気", "image_prompt": "木漏れ日の遊歩道"}, ensure_ascii=False)
+        with patch.object(server, "oauth_call", side_effect=self.bsky), patch.object(server, "call_ai", return_value=story), \
+             patch.object(server, "generate_image", side_effect=image):
+            server.RUNNER.story_due(target, now)
+            server.RUNNER.story_due(target, now)  # Already logged: no second story.
+        self.assertEqual(len(self.bsky.stories), 1)
+        sent = self.bsky.stories[0]
+        self.assertEqual((sent["text"], sent["tag"], sent["mime"]), ("いい天気", "pinkleapStory", "image/jpeg"))
+        self.assertEqual(base64.b64decode(sent["image"]), b"\xff\xd8jpeg")
+        self.assertTrue(prompts[0].startswith("木漏れ日の遊歩道"))
+        self.assertIn(automation.IMAGE_STYLE, prompts[0])
+        log = server.RUNNER.load_day(1, now.date())["story_log"]
+        self.assertEqual([(item["time"], item["status"]) for item in log], [("11:50", "posted")])
+
+    def test_story_preview_then_post_uses_the_edited_caption(self):
+        self.save(auto_reply=False)
+        self.story_day(datetime.datetime.now())
+        story = json.dumps({"caption": "生成した一言", "image_prompt": "湯気の立つコーヒー"}, ensure_ascii=False)
+        status, data = invoke("do_POST", "/api/characters/1/automation/story", {"caption": "x"})
+        self.assertEqual(status, 400)  # Nothing generated yet.
+        with patch.object(server, "call_ai", return_value=story), patch.object(server, "generate_image", return_value=b"img"):
+            status, data = invoke("do_POST", "/api/characters/1/automation/story-preview", {})
+        self.assertEqual(status, 200)
+        self.assertEqual(data["image"], "data:image/jpeg;base64," + base64.b64encode(b"img").decode())
+        self.assertEqual(data["prompt"][-1]["key"], "image")
+        with patch.object(server, "oauth_call", side_effect=self.bsky):
+            status, data = invoke("do_POST", "/api/characters/1/automation/story", {"caption": "直した一言"})
+        self.assertEqual(status, 200)
+        self.assertEqual(self.bsky.stories[0]["text"], "直した一言")
+        self.assertEqual(data["record"]["status"], "manual")
+
+    def test_dm_reply_knows_both_sides_posts(self):
+        captured = []
+
+        def ai(messages, json_mode=False, temperature=0.9):
+            captured.append(messages)
+            return "見てくれたの？"
+        own = [{"date": "2026-10-24 12:00", "text": "プリンを作った", "story": False},
+               {"date": "2026-10-24 20:00", "text": "", "story": True}]
+        partner = [{"date": "2026-10-23 21:00", "text": "猫を拾った"}]
+        posts = automation.posts_text(own, partner, "ハル")
+        automation.generate_dm_reply(ai, {"name": "n", "profile": "p"}, {}, [(False, "プリンおいしそう")], "ハル",
+                                     [], datetime.datetime(2026, 10, 24, 21, 0), posts=posts)
+        system = captured[0][0]["content"]
+        self.assertIn("プリンを作った", system)
+        self.assertIn("[ストーリー] (画像のみ)", system)
+        self.assertIn("ハル が最近 Bluesky に投稿したこと", system)
+        self.assertIn("猫を拾った", system)
+        self.assertEqual(automation.posts_text([], [], "ハル"), "")
+
+    def test_schedule_generation_fills_plans_and_events(self):
         base = automation.parse_schedule_base(json.dumps(automation.DEFAULT_SCHEDULE))
         name = base["week"]["月"]
         keys = [f"{b['start']}〜{b['end']} {b['activity']}" for b in base["patterns"][name] if b["status"] != "sleep"]
@@ -207,10 +316,8 @@ class AutomationTest(unittest.TestCase):
                             "events": [{"slot": keys[0], "text": "傘を忘れた"}]})
         monday = datetime.date(2026, 10, 19)
         day = automation.generate_day(lambda *args: reply, {"name": "n", "profile": "p"}, {}, base, monday, [])
-        self.assertEqual(len(day["post_times"]), 3)
-        free = [b for b in day["blocks"] if b["status"] == "free"]
-        for t in day["post_times"]:
-            self.assertTrue(any(b["start"] <= t < b["end"] for b in free))
+        self.assertNotIn("post_times", day)  # Posting times are fixed in the settings now.
+        self.assertEqual([event["text"] for event in day["events"]], ["傘を忘れた"])
         self.assertEqual(day["blocks"][1]["detail"], "予定0")  # Echoed times are stripped.
 
     def test_oauth_callback_records_granted_scope(self):

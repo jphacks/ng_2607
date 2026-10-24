@@ -41,7 +41,7 @@ class FakeDm:
 
 
 def fake_ai(reply="うん", evaluations=(), memories=()):
-    """Local AI stand-in: answers the relationship evaluation and the reply prompts separately."""
+    """AI stand-in: answers the relationship evaluation and the reply prompts separately."""
     def ai(messages, json_mode=False, temperature=0.75, model=None, timeout=120):
         if "評価係" in messages[0]["content"]:
             return json.dumps({"evaluations": list(evaluations), "reason": "テスト", "memories": list(memories)}, ensure_ascii=False)

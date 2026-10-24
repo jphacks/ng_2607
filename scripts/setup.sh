@@ -17,4 +17,4 @@ if ! command -v node >/dev/null 2>&1 || ! node -e 'const [major, minor] = proces
   printf 'OAuth には Node.js 22.19 以上が必要です。Node.js を更新してから npm install を実行してください。\n' >&2
   exit 1
 fi
-printf '次に npm install と ollama pull qwen3:4b を実行してください。\n'
+printf '次に npm install を実行し、.env に OpenAI の API キーとモデルを書いてください (cp .env.example .env)。\n'
