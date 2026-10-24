@@ -18,7 +18,7 @@ HEADER = """-- Re:Al Love Simulator: shared character settings
 -- Auto-reply / auto-post are not shared: the importer keeps each PC's own setting (OFF for new characters).
 """
 CHARACTER_RE = re.compile(r"^-- character: (\S+)$", re.MULTILINE)
-AUTOMATION_COLUMNS = ("post_prompt", "extra_persona", "schedule_base", "require_unlock", "unlock_score", "post_times", "story_times")
+AUTOMATION_COLUMNS = ("post_prompt", "extra_persona", "schedule_base", "require_unlock", "unlock_score", "post_times", "story_times", "story_image_prompt")
 
 
 def literal(value):
