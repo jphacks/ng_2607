@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="hiyori-dynamic.css">
   <link rel="stylesheet" href="hiyori-ui.css">
   <link rel="stylesheet" href="brand.css">
+  <link rel="stylesheet" href="profile.css">
   <script src="hiyori-config.js" defer></script>
   <script src="hiyori-engine.js" defer></script>
   <script src="hiyori-ui-config.js" defer></script>
@@ -37,7 +38,7 @@
     <aside class="sidebar" aria-label="キャラクターの紹介">
       <img class="portrait" data-partner-image src="avatar-placeholder.svg" alt="">
       <div class="intro"><h1 class="partner-name"></h1><p class="partner-handle"></p></div>
-      <section class="affinity" aria-label="好感度"><div class="affinity-heading"><span>好感度</span><span><strong>0</strong> / 100</span></div><progress value="0" max="100"></progress><p></p><div class="relationship-axes" hidden><div class="axis" data-axis="affection"><span>好意</span><progress max="100" value="0"></progress><b>0</b></div><div class="axis" data-axis="trust"><span>信頼</span><progress max="100" value="0"></progress><b>0</b></div><div class="axis" data-axis="romance"><span>恋愛感情</span><progress max="100" value="0"></progress><b>0</b></div><p class="axis-change" hidden></p></div></section>
+      <section class="affinity" aria-label="好感度"><div class="affinity-heading"><span>好感度</span><span><strong>0</strong> / 100</span></div><progress value="0" max="100"></progress><p></p></section>
       <p class="description"></p>
       <button class="profile-button" type="button" data-open-profile><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/></svg>プロフィールを見る<span>↗</span></button>
       <p class="ui-profile-badge" hidden></p>
@@ -52,7 +53,34 @@
       <footer class="composer-area"><div class="composer"><textarea rows="1" aria-label="メッセージ"></textarea><button class="send-button" type="button" aria-label="メッセージを送信" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 14-7-5 14-3-6-6-1Z"/><path d="m11 13 8-8"/></svg></button></div><div class="composer-count"><span>Enterで送信 · Shift+Enterで改行</span><span class="count"></span></div><p>あなたの送信とAIの返信はBluesky DMに記録されます</p></footer>
     </section>
   </main>
-  <dialog id="profile" aria-labelledby="profile-title"><div class="profile-top"><span>PROFILE</span><button class="icon-button" id="close-profile" type="button" aria-label="プロフィールを閉じる">×</button></div><div class="profile-content"><img class="profile-portrait" data-partner-image src="avatar-placeholder.svg" alt=""><h2 id="profile-title" class="partner-name"></h2><p class="partner-handle"></p><section class="affinity" aria-label="好感度"><div class="affinity-heading"><span>好感度</span><span><strong>0</strong> / 100</span></div><progress value="0" max="100"></progress><p></p><div class="relationship-axes" hidden><div class="axis" data-axis="affection"><span>好意</span><progress max="100" value="0"></progress><b>0</b></div><div class="axis" data-axis="trust"><span>信頼</span><progress max="100" value="0"></progress><b>0</b></div><div class="axis" data-axis="romance"><span>恋愛感情</span><progress max="100" value="0"></progress><b>0</b></div><p class="axis-change" hidden></p></div><details class="axis-detail" hidden><summary>前回の判定の内訳</summary><p class="axis-reason"></p><ul></ul></details></section><section class="secret-section" hidden><h3>ふたりだけのヒミツ</h3><div class="secret-list"></div></section><section class="bio-section"><h3>プロフィール</h3><p class="profile-bio clamped"></p><button class="bio-toggle" type="button" hidden>続きを読む</button></section><p class="profile-note">会話本文はBluesky DMから取得します。好感度は好意・信頼・恋愛感情の3つで、ReAl でも Bluesky のDMでも上がります。進行と判定の記録はこのPCに保存されます。</p></div></dialog>
+  <dialog id="profile" aria-labelledby="profile-title">
+    <div class="profile-top"><span>PROFILE</span><button class="icon-button" id="close-profile" type="button" aria-label="プロフィールを閉じる">×</button></div>
+    <div class="profile-content">
+      <div class="profile-hero">
+        <img class="profile-portrait" data-partner-image src="avatar-placeholder.svg" alt="">
+        <div class="profile-identity"><span class="profile-eyebrow">もっと、あなたを知りたい。</span><h2 id="profile-title" class="partner-name"></h2><p class="partner-handle"></p>
+          <section class="affinity" aria-label="好感度"><div class="affinity-heading"><span>好感度</span><span><strong>0</strong> / 100</span></div><progress value="0" max="100"></progress><p></p></section>
+        </div>
+      </div>
+      <div class="profile-tabs" role="tablist" aria-label="プロフィールの内容">
+        <button id="profile-tab-intro" type="button" role="tab" aria-selected="true" aria-controls="profile-panel-intro" tabindex="0" data-profile-tab="intro">紹介</button>
+        <button id="profile-tab-secrets" type="button" role="tab" aria-selected="false" aria-controls="profile-panel-secrets" tabindex="-1" data-profile-tab="secrets">ふたりのヒミツ</button>
+        <button id="profile-tab-memories" type="button" role="tab" aria-selected="false" aria-controls="profile-panel-memories" tabindex="-1" data-profile-tab="memories">思い出</button>
+      </div>
+      <div class="profile-panels">
+        <section id="profile-panel-intro" role="tabpanel" aria-labelledby="profile-tab-intro" tabindex="0" class="profile-panel">
+          <p class="profile-bio"></p>
+          <div class="profile-fact-grid">
+            <section class="profile-fact"><span aria-hidden="true">♡</span><h3>好きなもの</h3><div class="profile-likes"></div></section>
+            <section class="profile-fact"><span aria-hidden="true">✧</span><h3>どんな人？</h3><p class="profile-personality"></p></section>
+          </div>
+          <details class="profile-more"><summary>もっと知る</summary><dl class="profile-basics"></dl><p class="profile-details"></p></details>
+        </section>
+        <section id="profile-panel-secrets" role="tabpanel" aria-labelledby="profile-tab-secrets" tabindex="0" class="profile-panel" hidden><section class="secret-section"><h3>ふたりだけのヒミツ</h3><p class="profile-section-note">会話を重ねると、新しい一面が届きます。</p><div class="secret-list"></div><p class="profile-secret-empty" hidden>公開されるヒミツは、まだありません。</p></section></section>
+        <section id="profile-panel-memories" role="tabpanel" aria-labelledby="profile-tab-memories" tabindex="0" class="profile-panel" hidden><div class="profile-memory-card"><span aria-hidden="true">♡</span><h3>ふたりの大切な瞬間</h3><p class="profile-memory-empty">これから重ねる思い出を、ここに。</p><div class="profile-memory-actions"></div></div><section class="profile-episodes" hidden><h3>日々のエピソード</h3><div class="profile-episode-list"></div></section></section>
+      </div>
+    </div>
+  </dialog>
   <dialog class="ui-update" aria-labelledby="ui-update-title"><section class="update-card"><img alt=""><div class="update-key" aria-hidden="true">♡</div><h2 id="ui-update-title"></h2><p class="update-description"></p><button class="update-read" type="button">ヒミツを見る</button><button class="update-later" type="button">あとで</button></section></dialog>
   <div class="live-update" role="status"></div>
 </body>

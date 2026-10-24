@@ -42,7 +42,7 @@ def export_sql(db):
         match = f"(SELECT id FROM characters WHERE lower(handle)=lower({literal(handle)}) ORDER BY id LIMIT 1)"
         values = {"name": row["name"], "profile": row["profile"], "at_did": row["at_did"],
                   "avatar_url": row["avatar_url"], "relationship_weights": row["relationship_weights"],
-                  "relationship_stages": row["relationship_stages"]}
+                  "relationship_stages": row["relationship_stages"], "public_profile": row["public_profile"]}
         parts += [
             f"\n-- character: {handle}",
             f"INSERT INTO characters(name,profile,handle,at_did,avatar_url,relationship_weights,updated_at) "

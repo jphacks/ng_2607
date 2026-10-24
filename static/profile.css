@@ -1,0 +1,45 @@
+/* Compact profile card. Keep identity visible while tab content scrolls. */
+.ui-page #profile{width:760px;max-width:calc(100vw - 40px);height:min(590px,88dvh);max-height:88dvh;margin:auto;border:1px solid #ecdce3;border-radius:24px;overflow:hidden;background:#fffcfa}
+.ui-page #profile[open]{display:flex;flex-direction:column}
+.ui-page #profile .profile-top{position:relative;flex-shrink:0;padding:8px 22px;background:#fffcfa;border-bottom:0;min-height:44px}
+.ui-page #profile .profile-top>span{color:#a57288;font-size:10px;letter-spacing:.2em}
+.ui-page #profile .profile-content{display:flex;flex-direction:column;flex:1;min-height:0;max-width:none;width:100%;padding:0;margin:0}
+.profile-hero{display:grid;grid-template-columns:138px minmax(0,1fr);gap:24px;padding:0 28px 20px;align-items:center;flex-shrink:0;background:radial-gradient(ellipse at 8% 40%,#f7dce65c,transparent 70%)}
+.ui-page #profile .profile-portrait{width:138px;height:156px;object-fit:cover;object-position:center 25%;border-radius:18px;margin:0;box-shadow:0 8px 24px #a7778f18}
+.profile-identity{min-width:0}.profile-eyebrow{font-size:10px;color:#a3818f;letter-spacing:.08em}
+.ui-page #profile .profile-identity h2{font-size:24px;line-height:1.4;margin:6px 0 2px}
+.ui-page #profile .partner-handle{margin:0 0 12px;font-size:11px;overflow-wrap:anywhere}
+.ui-page #profile .affinity{margin:0;padding:10px 14px;border:1px solid #efdee6;background:#ffffffb3;border-radius:12px}
+.ui-page #profile .affinity strong{font-size:22px}.ui-page #profile .affinity progress{margin:7px 0}.ui-page #profile .affinity p{margin:0;font-size:11px}
+.profile-tabs{display:flex;gap:6px;padding:0 28px;border-bottom:1px solid #eddee4;flex-shrink:0;background:#fffcfa}
+.profile-tabs button{position:relative;flex:1;min-width:0;padding:14px 4px;border:0;background:none;color:#9b8992;font:inherit;font-size:12px;cursor:pointer;min-height:46px}
+.profile-tabs button[aria-selected=true]{color:#9e4c70;font-weight:600}
+.profile-tabs button[aria-selected=true]::after{content:'';position:absolute;bottom:-1px;left:12%;right:12%;height:3px;border-radius:4px;background:#bb7695}
+.profile-tabs button:focus-visible{outline:2px solid #b77391;outline-offset:-4px;border-radius:8px}
+.profile-panels{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable;padding:22px 28px 26px}
+.profile-panel[hidden]{display:none}.profile-panel:focus-visible{outline:2px solid #e1b8ca;outline-offset:4px}
+.ui-page #profile .profile-bio{font-size:13px;line-height:1.9;color:#68545e;white-space:pre-wrap;margin:0 0 20px;overflow-wrap:anywhere}
+.profile-fact-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.profile-fact{position:relative;padding:18px;border:1px solid #eedde4;border-radius:16px;background:#fff6f8}
+.profile-fact:nth-child(2){background:#f7f3ee;border-color:#e9e0d6}
+.profile-fact>span{font-size:20px;color:#bc8399;float:right}.profile-fact h3{font-size:12px;font-weight:600;color:#9b637b;margin:0 0 12px}
+.profile-fact p{font-size:12px;line-height:1.8;margin:0;color:#796873;white-space:pre-wrap;overflow-wrap:anywhere}
+.profile-likes{display:flex;gap:6px;flex-wrap:wrap}.profile-tag{font-size:11px;line-height:1.6;padding:3px 9px;border:1px solid #efd5df;border-radius:20px;background:#fff;color:#96647c;overflow-wrap:anywhere;max-width:100%}
+.profile-more{margin-top:18px;border-top:1px solid #efe4e8;padding-top:14px}.profile-more>summary{font-size:12px;color:#9f7186;cursor:pointer}
+.profile-basics{margin:10px 0}.profile-basics>div{padding:9px 0;grid-template-columns:100px minmax(0,1fr);font-size:12px;border-color:#f0e7eb}.profile-basics dd{overflow-wrap:anywhere}
+.profile-details{font-size:12px;line-height:1.9;white-space:pre-wrap;color:#796873;overflow-wrap:anywhere}
+.ui-page #profile .secret-section{margin:0}.profile-section-note,.profile-secret-empty{font-size:12px;line-height:1.8;color:#a08a95;margin:8px 0 16px}
+.profile-memory-card{text-align:center;padding:26px 20px;border-radius:18px;border:1px solid #eddee3;background:linear-gradient(135deg,#fff3f6,#f8f2e9)}
+.profile-memory-card>span{color:#c08b9e;font-size:32px}.profile-memory-card h3{font-size:15px;font-weight:500;color:#9c627b}.profile-memory-card p{font-size:12px;color:#a08a95}
+@media(max-width:700px){
+ .ui-page #profile{width:calc(100vw - 24px);max-width:calc(100vw - 24px);height:min(610px,90dvh);max-height:90dvh;margin:auto;border:1px solid #ecdce3;border-radius:22px}
+ .profile-hero{grid-template-columns:94px minmax(0,1fr);gap:14px;padding:0 18px 16px}
+ .ui-page #profile .profile-portrait{width:94px;height:122px;border-radius:14px}.profile-eyebrow{font-size:9px}
+ .ui-page #profile .profile-identity h2{font-size:18px}.ui-page #profile .partner-handle{font-size:9px;margin-bottom:9px}
+ .ui-page #profile .affinity{padding:8px 10px}.ui-page #profile .affinity strong{font-size:18px}
+ .profile-tabs{padding:0 14px}.profile-tabs button{font-size:11px}.profile-panels{padding:18px}
+ .profile-fact{padding:13px}.profile-fact-grid{gap:8px}.profile-fact h3{font-size:11px}.profile-fact p{font-size:11px}
+}
+@media(max-height:520px){.profile-hero{grid-template-columns:74px minmax(0,1fr);padding-bottom:10px}.ui-page #profile .profile-portrait{width:74px;height:90px}.profile-eyebrow{display:none}.ui-page #profile .partner-handle{margin-bottom:4px}.ui-page #profile .profile-top{min-height:36px;padding-block:4px}.profile-tabs button{padding:9px 4px;min-height:36px}}
+
+.profile-episodes{margin-top:22px}.profile-episodes>h3{font-size:13px;font-weight:500;color:#9b6b82;margin:0 0 12px}.profile-episode{border:1px solid #eddfe6;border-left:3px solid #d6a4bb;border-radius:0 14px 14px 0;padding:15px 18px;background:#fff8fa;margin:12px 0}.profile-episode:nth-child(even){background:#faf6f0;border-color:#eadfd2;border-left-color:#c9ac8c}.profile-episode h4{font-size:13px;font-weight:500;color:#93647b;margin:0 0 8px}.profile-episode p{font-size:12px;line-height:1.9;white-space:pre-wrap;overflow-wrap:anywhere;color:#78646f;margin:0}

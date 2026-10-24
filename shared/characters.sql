@@ -241,9 +241,9 @@ AIとゲーム対決、AIに無茶振り
 ビジュアルコンセプト
 髪は淡いピンクベージュを基調に、毛先にミントブルーのグラデーション。瞳は明るいエメラルドグリーン。
 衣装はホワイトとネイビーを基調にした、近未来的なカジュアルファッション。小さな電子回路のアクセサリーや、コード記号を模したヘアピンを取り入れます。
-デザインの方向性： 清潔感のある人気アニメ風の美少女。エンジニア要素は控えめにして、専門知識がなくても一目で好きになれるデザインを目指します。',at_did='did:plc:vlpmacirpbovdiddtw3xqsig',avatar_url='https://cdn.bsky.app/img/avatar/plain/did:plc:vlpmacirpbovdiddtw3xqsig/bafkreihoqpuc4sxkvvdas4wb6orly2zs4ahy37bagp4d7qjxhh4fjl3yiq',relationship_weights='',updated_at=strftime('%s','now') WHERE id=(SELECT id FROM characters WHERE lower(handle)=lower('yukimemori.bsky.social') ORDER BY id LIMIT 1);
+デザインの方向性： 清潔感のある人気アニメ風の美少女。エンジニア要素は控えめにして、専門知識がなくても一目で好きになれるデザインを目指します。',at_did='did:plc:vlpmacirpbovdiddtw3xqsig',avatar_url='https://cdn.bsky.app/img/avatar/plain/did:plc:vlpmacirpbovdiddtw3xqsig/bafkreihoqpuc4sxkvvdas4wb6orly2zs4ahy37bagp4d7qjxhh4fjl3yiq',relationship_weights='',relationship_stages='',public_profile='{"intro": "昼はIT企業で働くエンジニア、夜はゲームとおしゃべりを楽しむVTuber。明るく人懐っこくて、ちょっと抜けているところも。好きなことを話し始めると、つい夢中になってしまう。気軽に「めもちゃん」って呼んでね。", "personality": "好奇心旺盛で、失敗しても前向き。仕事では頼れる存在だけど、普段は少しおっちょこちょい。", "likes": "ゲーム、甘いもの、猫、便利なガジェット", "basics": "愛称：めもちゃん・めもりん\n年齢：22歳\n誕生日：8月8日\n身長：158cm\n得意なこと：AI・アプリ開発・Web開発", "details": "昼間はエンジニアとして働きながら、夜はVTuberとして活動しています。ゲーム実況や日常の雑談、恋バナ、歌など、気になることには何でも挑戦。視聴者のアイデアからアプリを作る開発企画も楽しんでいます。\nホラーゲームと早起きはちょっと苦手。プログラミングの話になると早口になるけれど、難しいことをわかりやすく伝えるのが得意です。", "memories": "配信中の小さなハプニング\n自分で作ったアプリが、配信中にまさかのバグ。視聴者にツッコまれながらも、最後はみんなで笑ってしまう。うまくいかない日も、一緒に楽しめる時間に変えていく。\n\nアイデアが形になる瞬間\n視聴者のアイデアをきっかけに、アプリ作りに挑戦。気づけばプログラミングの話に夢中になって、つい早口に。誰かの思いつきが動くものになる、そんな瞬間が好き。\n\nゲームとおしゃべりの夜\n仕事を終えたあとは、大好きなゲームと気ままなおしゃべり。日常の話も恋バナも、ちょっとした悩みも。みんなと話す夜の時間を大切にしている。"}',updated_at=strftime('%s','now') WHERE id=(SELECT id FROM characters WHERE lower(handle)=lower('yukimemori.bsky.social') ORDER BY id LIMIT 1);
 DELETE FROM character_secrets WHERE character_id=(SELECT id FROM characters WHERE lower(handle)=lower('yukimemori.bsky.social') ORDER BY id LIMIT 1);
-INSERT INTO character_automation(character_id,auto_reply,auto_post,post_prompt,extra_persona,schedule_base,require_unlock,unlock_score,updated_at) SELECT (SELECT id FROM characters WHERE lower(handle)=lower('yukimemori.bsky.social') ORDER BY id LIMIT 1),0,0,'Bluesky に日々のつぶやきを投稿してください。
+INSERT INTO character_automation(character_id,auto_reply,auto_post,post_prompt,extra_persona,schedule_base,require_unlock,unlock_score,post_times,story_times,updated_at) SELECT (SELECT id FROM characters WHERE lower(handle)=lower('yukimemori.bsky.social') ORDER BY id LIMIT 1),0,0,'Bluesky に日々のつぶやきを投稿してください。
 エンジニアの仕事のこと、ゲーム、甘いもの、猫、ガジェット、季節の話題など、日常のちょっとした気づきを、めもりらしい明るさとユーモアで書いてください。
 投稿する時刻に合った内容にしてください (朝なら朝の話題)。','あなたは「結城 めもり (ゆうき めもり)」という、AI で動く架空の女性エンジニア VTuber です。
 キャッチフレーズ:「みんなの思い出、ぜーんぶ保存しちゃうぞっ！」
@@ -410,6 +410,6 @@ INSERT INTO character_automation(character_id,auto_reply,auto_post,post_prompt,e
       }
     ]
   }
-}',1,40,strftime('%s','now') WHERE (SELECT id FROM characters WHERE lower(handle)=lower('yukimemori.bsky.social') ORDER BY id LIMIT 1) IS NOT NULL ON CONFLICT(character_id) DO UPDATE SET post_prompt=excluded.post_prompt,extra_persona=excluded.extra_persona,schedule_base=excluded.schedule_base,require_unlock=excluded.require_unlock,unlock_score=excluded.unlock_score,updated_at=excluded.updated_at;
+}',1,40,'12:30,19:00,22:00','20:00',strftime('%s','now') WHERE (SELECT id FROM characters WHERE lower(handle)=lower('yukimemori.bsky.social') ORDER BY id LIMIT 1) IS NOT NULL ON CONFLICT(character_id) DO UPDATE SET post_prompt=excluded.post_prompt,extra_persona=excluded.extra_persona,schedule_base=excluded.schedule_base,require_unlock=excluded.require_unlock,unlock_score=excluded.unlock_score,post_times=excluded.post_times,story_times=excluded.story_times,updated_at=excluded.updated_at;
 
 COMMIT;

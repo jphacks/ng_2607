@@ -78,34 +78,6 @@
     });
     $('.mobile-relation').textContent = `好感度 ${value} · ${relation}`;
   }
-  const AXIS_LABELS = {affection: '好意', trust: '信頼', romance: '恋愛感情'};
-  const signed = value => (value > 0 ? '+' : value < 0 ? '−' : '±') + Math.abs(value).toFixed(1);
-  // The meter shows the overall value; this shows the three axes and the last change behind it.
-  function renderAxes() {
-    const axes = snapshot()?.axes, update = snapshot()?.lastUpdate;
-    $$('.relationship-axes').forEach(section => {
-      section.hidden = !axes;
-      if (!axes) return;
-      for (const [axis, value] of Object.entries(axes)) {
-        const row = section.querySelector(`[data-axis="${axis}"]`);
-        row.querySelector('progress').value = value;
-        row.querySelector('b').textContent = Math.round(value);
-        row.setAttribute('aria-label', `${AXIS_LABELS[axis]} ${Math.round(value)}`);
-      }
-      const change = section.querySelector('.axis-change');
-      change.hidden = !update;
-      if (update) change.textContent = (update.channel === 'bluesky' ? '前回の変化（Bluesky DM） ' : '前回の変化 ') + Object.entries(update.delta).map(([axis, value]) => `${AXIS_LABELS[axis]} ${signed(value)}`).join(' · ');
-    });
-    const detail = $('.axis-detail');
-    detail.hidden = !update;
-    if (!update) return;
-    detail.querySelector('.axis-reason').textContent = update.evaluated === false ? update.reason : (update.reason || '理由は記録されていません。');
-    detail.querySelector('ul').replaceChildren(...(update.breakdown.length ? update.breakdown.map(item => {
-      const line = el('li', null, `${AXIS_LABELS[item.axis]} ${signed(item.contribution)}: ${item.label}（該当度 ${item.score}${item.multiplier < 1 ? `・繰り返しのため×${item.multiplier}` : ''}）`);
-      if (item.evidence) line.append(el('q', null, item.evidence));
-      return line;
-    }) : [el('li', null, '当てはまる条件はありませんでした。')]));
-  }
   function renderPartner() {
     const p = selected;
     $$('[data-partner-image]').forEach(img => { img.src = p.images.normal; img.alt = ''; });
@@ -113,6 +85,26 @@
     $$('.partner-handle').forEach(node => { node.textContent = p.handle; node.hidden = !p.handle; });
     $('.description').textContent = p.bio;
     $('.profile-bio').textContent = p.bio;
+    const info = p.publicProfile || {};
+    $('.profile-personality').textContent = info.personality || 'どんな人か、会話で知っていこう。';
+    const likes = (info.likes || '').split(/[、,\n]/).map(value => value.trim()).filter(Boolean);
+    $('.profile-likes').replaceChildren(...(likes.length ? likes.map(text => el('span', 'profile-tag', text)) : [el('p', null, '好きなものは、これから聞いてみよう。')]));
+    const basics = $('.profile-basics'); basics.replaceChildren();
+    for (const line of (info.basics || '').split('\n').filter(line => line.trim())) {
+      const [label, ...value] = line.split(/[：:]/);
+      const row = el('div'); row.append(el('dt', null, value.length ? label : '紹介'), el('dd', null, value.length ? value.join('：') : label)); basics.append(row);
+    }
+    $('.profile-details').textContent = info.details || '';
+    const episodes = (info.memories || '').split(/\n\s*\n/).map(text => text.trim()).filter(Boolean);
+    $('.profile-episodes').hidden = !episodes.length;
+    $('.profile-episode-list').replaceChildren(...episodes.map(text => {
+      const [title, ...lines] = text.split('\n');
+      const card = el('article', 'profile-episode');
+      card.append(el('h4', null, lines.length ? title : '日々のひとこま'), el('p', null, lines.length ? lines.join('\n') : title));
+      return card;
+    }));
+    $('.profile-more').hidden = !info.basics && !info.details;
+    $('.profile-more').open = false;
     $('.sidebar').setAttribute('aria-label', p.name + 'の紹介');
     $('.chat').setAttribute('aria-label', p.name + 'とのチャット');
     input.placeholder = p.oauthConnected ? 'Bluesky DMを送る…' : 'キャラクターのOAuth接続が必要です';
@@ -331,7 +323,8 @@
     }
   }
   function renderSecrets() {
-    secretsSection.hidden = !snapshot().secrets.length;
+    secretsSection.hidden = false;
+    $('.profile-secret-empty').hidden = !!snapshot().secrets.length;
     secretList.replaceChildren();
     for (const secret of snapshot().secrets) {
       const card = el('details', `secret-card${secret.unlocked ? '' : ' locked'}`);
@@ -349,12 +342,9 @@
   function openProfile(reveal = false, trigger = document.activeElement) {
     if (!snapshot() || busy || loading || !player.layer.hidden) return;
     profileTrigger = trigger;
-    renderAffinity(); renderAxes(); renderSecrets();
+    renderAffinity(); renderSecrets();
     profile.showModal(); profile.scrollTop = 0; $('#close-profile').focus();
-    const bio = $('.profile-bio');
-    bio.classList.add('clamped');
-    $('.bio-toggle').hidden = bio.scrollHeight <= bio.clientHeight + 1;
-    $('.bio-toggle').textContent = '続きを読む';
+    selectProfileTab(reveal ? 'secrets' : 'intro');
     if (reveal) {
       const first = snapshot().secrets.find(s => s.unlocked && !s.read);
       const card = first && [...secretList.children].find(c => c.dataset.secret === first.id);
@@ -363,11 +353,29 @@
     setControls();
   }
   $('#close-profile').onclick = () => profile.close();
-  $('.bio-toggle').onclick = () => {
-    const clamped = $('.profile-bio').classList.toggle('clamped');
-    $('.bio-toggle').textContent = clamped ? '続きを読む' : '閉じる';
-  };
+  function selectProfileTab(name, focus = false) {
+    $$('[data-profile-tab]').forEach(button => {
+      const active = button.dataset.profileTab === name;
+      button.setAttribute('aria-selected', String(active)); button.tabIndex = active ? 0 : -1;
+      if (active && focus) button.focus();
+    });
+    $$('.profile-panel').forEach(panel => { panel.hidden = panel.id !== 'profile-panel-' + name; });
+    $('.profile-panels').scrollTop = 0;
+  }
+  const profileTabs = [...$$('[data-profile-tab]')];
+  profileTabs.forEach((button, index) => {
+    button.onclick = () => selectProfileTab(button.dataset.profileTab);
+    button.onkeydown = event => {
+      let next;
+      if (event.key === 'ArrowRight') next = (index + 1) % profileTabs.length;
+      if (event.key === 'ArrowLeft') next = (index + profileTabs.length - 1) % profileTabs.length;
+      if (event.key === 'Home') next = 0;
+      if (event.key === 'End') next = profileTabs.length - 1;
+      if (next !== undefined) { event.preventDefault(); selectProfileTab(profileTabs[next].dataset.profileTab, true); }
+    };
+  });
   profile.addEventListener('click', event => {
+    if (event.target !== profile) return;
     const r = profile.getBoundingClientRect();
     if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) profile.close();
   });
@@ -434,7 +442,7 @@
       const session = current();
       session.snapshot = data;
       if (session.pending) session.pending.status = 'failed';
-      renderPartner(); renderAffinity(); renderAxes(); renderBadge();
+      renderPartner(); renderAffinity(); renderBadge();
       input.value = session.draft; resizeInput();
       loading = false; selection.hidden = true; app.hidden = false; switcher.hidden = false; status.textContent = '';
       history.replaceState(null, '', '/?partner=' + encodeURIComponent(id));
@@ -475,7 +483,7 @@
         onFrame: s => renderAffinity(s.affinity, s.visual, data.relationship),
       });
       if (token !== epoch) return;
-      renderAffinity(); renderAxes(); renderBadge();
+      renderAffinity(); renderBadge();
       const unlocked = data.secrets.filter(secret => secret.unlocked && !before.secrets.find(old => old.id === secret.id)?.unlocked);
       if (data.romance?.status === 'lovers' && before.romance?.status !== 'lovers') {
         const confessionReply = result.dmMessages?.find(item => item.sender?.did === selected.did && typeof item.text === "string")?.text;
@@ -486,8 +494,7 @@
         if (token !== epoch) return;
         showUpdate(unlocked);
       }
-      const change = result.relationshipUpdate?.delta;
-      live.textContent = '返信が届きました' + (change ? '。' + Object.entries(change).map(([axis, value]) => `${AXIS_LABELS[axis]} ${signed(value)}`).join('、') : '');
+      live.textContent = '返信が届きました';
     } catch (error) {
       if (token !== epoch) return;
       if (session.pending) { pending.status = 'failed'; renderMessages(); }
@@ -510,7 +517,7 @@
       if (token !== epoch) return;
       Object.assign(current(), {snapshot: data, pending: null, draft: ''});
       input.value = ''; resizeInput();
-      renderMessages({force: true}); renderAffinity(); renderAxes(); renderBadge(); clearError();
+      renderMessages({force: true}); renderAffinity(); renderBadge(); clearError();
     } catch (error) {
       if (token === epoch && error.name !== 'AbortError') showError(error.message);
     } finally {
@@ -572,7 +579,7 @@
       },
       async secret() {
         await ensurePreview();
-        openProfile();
+        openProfile(); selectProfileTab('secrets');
         const secret = {id: 'preview', title: '演出プレビューのヒミツ', unlocked: true, read: false,
           content: '実は、あなたと話せる時間をいつも楽しみにしています。\nこれは演出確認用です。閲覧状態は変更しません。'};
         const card = el('details', 'secret-card'); card.open = true;
