@@ -174,6 +174,34 @@ class AutomationTest(unittest.TestCase):
         self.assertEqual(self.bsky.sent, [])
         self.assertEqual(server.RUNNER.status[1]["currentStatus"], "busy")
 
+    def test_auto_reply_judges_a_confession_at_the_last_stage(self):
+        self.save(require_unlock=False)
+        self.story_day(datetime.datetime.now())
+        with server.database() as db:
+            server.edit_relationship(db, 1, STRANGER_DID, "stranger.test", {"affection": 90, "trust": 85, "romance": 80}, True, [])
+        self.bsky.add_convo("c1", STRANGER_DID, "stranger.test",
+                            [(STRANGER_DID, "今日も楽しかった"), (CHAR_DID, "わたしも！"), (STRANGER_DID, "好きです。付き合ってください")])
+        judged = []
+
+        def ai(messages, json_mode=False, temperature=0.75, model=None, timeout=120):
+            system = messages[0]["content"]
+            if "評価係" in system:
+                return json.dumps({"evaluations": [{"condition": "confess_sincerely", "score": 1.0, "evidence": "好きです"}],
+                                   "reason": "告白", "memories": []}, ensure_ascii=False)
+            if "告白判定係" in system:
+                judged.append(messages[1]["content"])
+                return json.dumps({"clear": True, "accept": True, "reason": "好感度が高い"}, ensure_ascii=False)
+            return "うれしい。よろしくね"
+        with patch.object(server, "oauth_call", side_effect=self.bsky), patch.object(server, "call_ai", side_effect=ai):
+            with server.database() as db:
+                target = server.automation_target(db, 1, VISITOR)
+            server.RUNNER.reply_all(target, server.RUNNER.load_day(1, datetime.date.today()))
+        self.assertEqual(len(judged), 1)
+        self.assertIn("プレイヤー: 今日も楽しかった\nキャラクター: わたしも！", judged[0])  # Speakers are not swapped.
+        self.assertIn("好きです。付き合ってください", judged[0])
+        with server.database() as db:
+            self.assertTrue(server.relationship_state(db, 1, STRANGER_DID)["lover"])
+
     def test_post_due_posts_latest_and_skips_stale_times(self):
         self.save(auto_reply=False, auto_post=True, post_times="15:00, 09:00,11:50")
         now = datetime.datetime.combine(datetime.date.today(), datetime.time(12, 0))
@@ -307,6 +335,40 @@ class AutomationTest(unittest.TestCase):
         self.assertIn("ハル が最近 Bluesky に投稿したこと", system)
         self.assertIn("猫を拾った", system)
         self.assertEqual(automation.posts_text([], [], "ハル"), "")
+
+    def test_relationship_can_be_edited_and_reset_by_the_owner(self):
+        body = {"did": PLAYER_DID, "axes": {"affection": 80, "trust": 65.5, "romance": 40}, "unlocked": True,
+                "memories": [{"kind": "promise", "text": "一緒に映画を見る"}]}
+        status, _ = invoke("do_POST", "/api/characters/1/relationship", body, visitor=OTHER_VISITOR)
+        self.assertEqual(status, 401)
+        status, data = invoke("do_POST", "/api/characters/1/relationship", {**body, "axes": {"affection": 120, "trust": 0, "romance": 0}})
+        self.assertEqual(status, 400)
+        status, data = invoke("do_POST", "/api/characters/1/relationship", body)
+        self.assertEqual(status, 200)
+        edited = data["relationships"][0]
+        self.assertEqual((edited["axes"], edited["unlocked"]), ({"affection": 80.0, "trust": 65.5, "romance": 40.0}, True))
+        self.assertEqual(edited["memories"], [{"kind": "promise", "text": "一緒に映画を見る"}])
+        with server.database() as db:
+            state = server.relationship_state(db, 1, PLAYER_DID)
+        self.assertEqual(state["scores"]["trust"], 65.5)  # The next message starts from the edited values.
+        self.assertEqual(state["recent"], [])  # No fake evaluation in the repetition window.
+
+        self.assertFalse(edited["lover"])
+        status, data = invoke("do_POST", "/api/characters/1/relationship", {**body, "axes": {"affection": 10, "trust": 10, "romance": 10}, "lover": True})
+        self.assertEqual((data["relationships"][0]["lover"], data["relationships"][0]["stage"]["name"]), (True, "恋人"))
+        status, data = invoke("do_POST", "/api/characters/1/relationship", {**body, "unlocked": False, "memories": []})
+        self.assertEqual((data["relationships"][0]["unlocked"], data["relationships"][0]["memories"]), (False, []))
+        status, data = invoke("do_POST", "/api/characters/1/relationship/delete", {"did": PLAYER_DID})
+        self.assertEqual((status, data["relationships"]), (200, []))
+        status, data = invoke("do_POST", "/api/characters/1/relationship", {**body, "did": CHAR_DID})
+        self.assertEqual(status, 400)
+
+    def test_relationship_can_be_added_by_handle(self):
+        with patch.object(server, "xrpc", return_value={"did": STRANGER_DID, "handle": "new.bsky.social"}):
+            status, data = invoke("do_POST", "/api/characters/1/relationship",
+                                  {"handle": "@new.bsky.social", "axes": dict(server.relationship.INITIAL), "unlocked": False})
+        self.assertEqual(status, 200)
+        self.assertEqual((data["relationships"][0]["did"], data["relationships"][0]["handle"]), (STRANGER_DID, "new.bsky.social"))
 
     def test_schedule_generation_fills_plans_and_events(self):
         base = automation.parse_schedule_base(json.dumps(automation.DEFAULT_SCHEDULE))

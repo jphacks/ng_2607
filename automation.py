@@ -474,7 +474,7 @@ class Runner:
 
     def targets(self):
         with self.env.DB_LOCK, self.env.database() as db:
-            rows = db.execute("""SELECT c.id,c.name,c.profile,c.oauth_did,c.relationship_weights,a.auto_reply,a.auto_post,
+            rows = db.execute("""SELECT c.id,c.name,c.profile,c.oauth_did,c.relationship_weights,c.relationship_stages,a.auto_reply,a.auto_post,
                                         a.post_prompt,a.extra_persona,a.schedule_base,a.recent_posts,a.require_unlock,a.unlock_score,
                                         a.post_times,a.auto_story,a.story_times
                                  FROM characters c JOIN character_automation a ON a.character_id=c.id
@@ -487,6 +487,10 @@ class Runner:
                     target["weights"] = relationship.parse_weights(row["relationship_weights"])
                 except ValueError:
                     target["weights"] = {}
+                try:
+                    target["stages"] = relationship.parse_stages(row["relationship_stages"])
+                except ValueError:
+                    target["stages"] = relationship.parse_stages("")
                 result.append(target)
         return result
 
@@ -636,7 +640,9 @@ class Runner:
                 evaluation = self.env.evaluate_message(target, state["scores"], "\n".join(item["text"] for item in turn),
                                                        before, state["memories"], self.env.character_posts(did))
                 update = {**relationship.update(state["scores"], evaluation, state["recent"], target.get("weights")), "channel": "bluesky"}
-                notes = relationship.reply_guidance(update["after"])
+                update = self.env.decide_confession(target, update, state["lover"], "\n".join(item["text"] for item in turn),
+                                                    before, state["memories"])
+                notes = relationship.reply_guidance(update["after"], target.get("stages"), state["lover"], update["confession"])
                 memories = state["memories"] + update["memories"]
                 if memories:
                     notes += "\n覚えていること:\n" + "\n".join(f"- [{relationship.MEMORY_KINDS[item['kind']]}] {item['text']}" for item in memories)
