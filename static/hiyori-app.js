@@ -455,14 +455,14 @@
     if (current().pending && !retry) return;
     const token = epoch, before = snapshot(), session = current();
     clearError(); busy = true;
-    const pending = retry ? session.pending : {clientMessageId: crypto.randomUUID(), text, createdAt: new Date().toISOString()};
+    const pending = retry ? session.pending : {clientMessageId: crypto.randomUUID(), text, createdAt: new Date().toISOString(), confession: globalThis.UIRomance?.confessing || false};
     pending.status = 'sending'; session.pending = pending; session.draft = '';
     input.value = ''; resizeInput();
     renderMessages({force: true, animate: true}); setControls();
     mainAbort = new AbortController();
     try {
       const result = await api.send(before, {clientMessageId: pending.clientMessageId, text,
-        confession: globalThis.UIRomance?.confessing || false}, mainAbort.signal);
+        confession: pending.confession || false}, mainAbort.signal);
       if (token !== epoch) return;
       const data = result.game;
       session.snapshot = data; session.pending = null;
@@ -477,8 +477,9 @@
       if (token !== epoch) return;
       renderAffinity(); renderAxes(); renderBadge();
       const unlocked = data.secrets.filter(secret => secret.unlocked && !before.secrets.find(old => old.id === secret.id)?.unlocked);
-      if (data.previewRomance?.status === 'lovers' && before.previewRomance?.status !== 'lovers') {
-        await globalThis.UIRomance?.celebrate(mainAbort.signal);
+      if (data.romance?.status === 'lovers' && before.romance?.status !== 'lovers') {
+        const confessionReply = result.dmMessages?.find(item => item.sender?.did === selected.did && typeof item.text === "string")?.text;
+        await globalThis.UIRomance?.celebrate(mainAbort.signal, confessionReply);
         if (token !== epoch) return;
       } else if (unlocked.length) {
         await new Promise(resolve => setTimeout(resolve, AFFECTION_CONFIG.popupGap));
@@ -545,8 +546,8 @@
       if (error.name !== 'AbortError') { status.textContent = '相手を読み込めませんでした。'; showError(error.message, bootstrap); }
     }
   }
-  // Available only when the preview server has loaded the romance preview.
-  if (globalThis.UIRomance) {
+  // Direct effect controls are restricted to the UI preview server.
+  if (document.body.dataset.uiPreview === 'true') {
     const ensurePreview = async () => {
       if (busy || loading) throw new Error('演出・読み込みが終わってから試してください。');
       if (!selected) {

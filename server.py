@@ -92,6 +92,8 @@ DID_RE = re.compile(r"^did:(plc:[a-z2-7]+|web:[A-Za-z0-9._:%-]+)$")
 SECRET_LEVELS = (25, 50, 75, 100)
 # Columns added after the first release, applied to existing databases in this order.
 MIGRATED_COLUMNS = (
+    ("dm_relationships", "is_lovers", "INTEGER NOT NULL DEFAULT 0"),  # Superseded by lover_at; migrated in init_db.
+    ("dm_turns", "confession", "INTEGER NOT NULL DEFAULT 0"),
     ("characters", "at_did", "TEXT NOT NULL DEFAULT ''"),
     ("characters", "oauth_did", "TEXT NOT NULL DEFAULT ''"),
     ("characters", "oauth_owner", "TEXT NOT NULL DEFAULT ''"),
@@ -297,6 +299,8 @@ def init_db():
         for table, column, definition in MIGRATED_COLUMNS:
             if column not in {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}:
                 db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        # Lovers recorded by the first confession implementation (is_lovers) carry over to lover_at.
+        db.execute("UPDATE dm_relationships SET lover_at=updated_at WHERE is_lovers=1 AND lover_at IS NULL")
         db.execute("""CREATE UNIQUE INDEX IF NOT EXISTS character_messages_client_id
             ON character_messages(visitor,did,character_id,client_message_id)
             WHERE client_message_id IS NOT NULL""")
@@ -753,10 +757,11 @@ def evaluate_message(character, scores, message, history, memories, posts):
     return relationship.no_change("評価結果を読み取れなかったため、関係は変化させませんでした")
 
 
-def decide_confession(character, update, lover, message, history, memories):
+def decide_confession(character, update, lover, message, history, memories, requested=False):
     """Settle a confession in this message. At the last stage the model judges it from the scores and the
-    context; a rejection lowers the relationship. Stored with the update, so a resent reply keeps the result."""
-    outcome = relationship.confession_outcome(update, lover)
+    context; a rejection lowers the relationship. Stored with the update, so a resent reply keeps the result.
+    requested: sent with the confession button, so it is judged even when the evaluation missed it."""
+    outcome = relationship.confession_outcome(update, lover, requested)
     if outcome != "judge":
         return {**update, "confession": outcome}
     messages = relationship.confession_messages(character, update["after"], message, history, memories)
@@ -793,7 +798,10 @@ def read_game(db, visitor, did, character_id=1):
     scores = state["scores"]
     return {
         "did": game["did"], "handle": game["handle"], "characterId": game["character_id"], "affinity": relationship.overall(scores),
-        "turns": game["turns"], "ending": game["ending"],
+        "turns": game["turns"], "ending": None,
+        # Drives the confession card and the lovers' scene (static/ui-romance.js).
+        "romance": {"status": "lovers" if state["lover"] else "ready" if relationship.confession_ready(scores) else "normal",
+                    "declined": bool(state["last"] and state["last"].get("confession") == "reject")},
         "axes": scores, "relationship": "恋人" if state["lover"] else relationship.label(scores), "lastUpdate": state["last"],
         "messages": [],  # DM history is fetched directly from AT Protocol.
         # Locked secrets expose only their title and threshold, never their content.
@@ -819,7 +827,7 @@ def update_turn(key, assignments, *values):
         db.execute(f"UPDATE dm_turns SET {assignments} WHERE " + TURN_KEY, (*values, *key))
 
 
-def send_game_chat(visitor, selected, did, message, client_message_id):
+def send_game_chat(visitor, selected, did, message, client_message_id, confession=False):
     """Send both sides of a game turn as Bluesky DMs; keep only game metadata locally."""
     digest = hashlib.sha256(message.encode("utf-8")).hexdigest()
     with CHAT_LOCK:
@@ -835,12 +843,12 @@ def send_game_chat(visitor, selected, did, message, client_message_id):
                 raise ValueError("自分自身のアカウントとはDMできません")
             key = (visitor, did, selected, game["session"], client_message_id)
             turn = db.execute("SELECT * FROM dm_turns WHERE " + TURN_KEY, key).fetchone()
-            if turn and turn["message_hash"] != digest:
+            if turn and (turn["message_hash"] != digest or bool(turn["confession"]) != confession):
                 raise ValueError("同じメッセージIDで異なる内容は送信できません")
             new_turn = turn is None
-            if new_turn:
-                if game["turns"] >= 10:
-                    raise ValueError("この物語は終了しています")
+            if new_turn and confession and (is_lover(db, selected, did) or not relationship.confession_ready(dm_scores(db, selected, did)[0])):
+                raise ValueError(f"告白は総合好感度{relationship.STAGE_MINIMUMS[-1]}以上で、まだ恋人ではない場合に送れます")
+
 
         # getConvoForMembers resolves the one-to-one DM and can create it for a first message.
         convo = oauth_call({"op": "convoWithMember", "did": did, "memberDid": character_did}).get("convo")
@@ -857,6 +865,9 @@ def send_game_chat(visitor, selected, did, message, client_message_id):
                 db.execute("""INSERT INTO dm_turns(visitor,did,character_id,game_session,client_message_id,
                               message_hash,status,created_at) VALUES(?,?,?,?,?,?,?,?)""",
                            (*key, digest, "prepared", int(time.time())))
+
+        if new_turn:
+            update_turn(key, "confession=?", int(confession))
 
         def find_message(sender, text_hash, created_at):
             for item in recent_messages:
@@ -918,7 +929,7 @@ def send_game_chat(visitor, selected, did, message, client_message_id):
                                           character_posts(character_did))
             update = {**relationship.update(state["scores"], evaluation, state["recent"], weights), "channel": "real"}
             # Decided before the reply and stored with the turn, so a resent reply keeps the same outcome.
-            update = decide_confession(character, update, state["lover"], message, history, memories)
+            update = decide_confession(character, update, state["lover"], message, history, memories, confession)
             # STEP 7: reply in a way that matches the updated relationship.
             memory_lines = "\n".join(f"- [{relationship.MEMORY_KINDS[item['kind']]}] {item['text']}"
                                       for item in memories + update["memories"]) or "(なし)"
@@ -975,7 +986,7 @@ def send_game_chat(visitor, selected, did, message, client_message_id):
             db.execute("""UPDATE character_games SET affinity=?,affection=?,trust=?,romance=?,turns=?,summary='',ending=?,updated_at=?
                           WHERE visitor=? AND did=? AND character_id=? AND session=?""",
                        (affinity, after["affection"], after["trust"], after["romance"], turns,
-                        ending_for(after) if turns == 10 else None, int(time.time()), visitor, did, selected, game["session"]))
+                        None, int(time.time()), visitor, did, selected, game["session"]))
             unlock_secrets(db, visitor, did, selected, affinity)
             result = read_game(db, visitor, did, selected)
         return {"game": result, "dmMessages": sent, "convoId": convo_id, "relationshipUpdate": update}
@@ -1583,7 +1594,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     raise PermissionError("認証したユーザーとDIDが一致しません")
                 if not client_message_id:
                     raise ValueError("メッセージIDを指定してください")
-                result = send_game_chat(visitor, selected, did, message, client_message_id)
+                confession = body.get("confession", False)
+                if not isinstance(confession, bool):
+                    raise ValueError("confession must be boolean")
+                result = send_game_chat(visitor, selected, did, message, client_message_id, confession)
                 return self.send_json(200, result, cookie)
             self.send_json(404, {"error": "見つかりません"}, cookie)
         except Exception as exc:

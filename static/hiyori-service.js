@@ -28,7 +28,7 @@
       affinity: game.affinity, relationship: game.relationship || '気になる存在',
       axes: game.axes || null, lastUpdate: game.lastUpdate || null,
       ending: game.ending || null, turns: game.turns,
-      previewRomance: game.previewRomance || null,
+      romance: game.romance || game.previewRomance || null,
       messages: game.messages.map((item, index) => ({
         id: item.id || 'message-' + index, role: item.role, text: item.content,
         createdAt: item.createdAt || new Date().toISOString(),

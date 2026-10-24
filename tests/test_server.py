@@ -132,10 +132,11 @@ class ServerTest(ServerFixture):
         self.assertEqual(len(dm.messages), 20)
         with server.database() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM character_messages").fetchone()[0], 0)
-        self.assertTrue(loaded["game"]["ending"])
-        with patch.object(server, "oauth_call", side_effect=dm):
-            status, _ = self.chat("もう一度")
-        self.assertEqual(status, 400)
+        self.assertIsNone(loaded["game"]["ending"])
+        with patch.object(server, "oauth_call", side_effect=dm), patch.object(server, "call_ai", side_effect=ai):
+            status, continued = self.chat("one more turn")
+        self.assertEqual(status, 200)
+        self.assertEqual(continued["game"]["turns"], 11)
 
     def test_ai_failure_does_not_store_message(self):
         self.connect_character()

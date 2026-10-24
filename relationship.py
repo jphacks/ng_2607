@@ -365,13 +365,19 @@ def confessed(update, minimum=CONFESSION_SCORE):
                for item in update.get("breakdown", []))
 
 
-def confession_outcome(update, lover):
+def confession_ready(scores):
+    """The last stage, where a confession can be accepted (the confession button is offered)."""
+    return stage_index(scores) == LOVER - 1
+
+
+def confession_outcome(update, lover, requested=False):
     """What a confession in this message leads to before any judging:
-    'judge' at the last stage (the confession judge decides), 'decline' before it, None otherwise."""
+    'judge' at the last stage (the confession judge decides), 'decline' before it, None otherwise.
+    requested: sent with the confession button, which always asks the judge at the last stage."""
     if lover:
         return None
-    if stage_index(update["after"]) == LOVER - 1:
-        return "judge" if confessed(update, POSSIBLE_CONFESSION_SCORE) else None
+    if confession_ready(update["after"]):
+        return "judge" if requested or confessed(update, POSSIBLE_CONFESSION_SCORE) else None
     return "decline" if confessed(update) else None
 
 
