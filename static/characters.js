@@ -125,7 +125,7 @@ async function loadMessages(id) {
 }
 
 const STATUS_LABELS = { free: '空き', busy: '忙しい', sleep: '睡眠' };
-const SCOPE_LABELS = { reply: 'DMの自動返信', post: '自動投稿' };
+const SCOPE_LABELS = { reply: 'DMの自動返信', post: '自動投稿', story: 'ストーリー (画像のアップロード)' };
 const POST_STATUS = { posted: '投稿済み', manual: '手動投稿', missed: '見送り' };
 function automationNotice(message, error = false) { $('automation-notice').textContent = message; $('automation-notice').classList.toggle('error', error); }
 const AXIS_NAMES = { affection: '好意', trust: '信頼', romance: '恋愛感情' };
@@ -142,8 +142,8 @@ function renderRelationships(relationships, settings) {
     return row;
   }));
 }
-function renderAutomationState(settings) { $('automation-state').textContent = `自動返信 ${settings.auto_reply ? 'ON' : 'OFF'} · 自動投稿 ${settings.auto_post ? 'ON' : 'OFF'}`; }
-function renderSchedule(today, now) {
+function renderAutomationState(settings) { $('automation-state').textContent = `自動返信 ${settings.auto_reply ? 'ON' : 'OFF'} · 自動投稿 ${settings.auto_post ? 'ON' : 'OFF'} · ストーリー ${settings.auto_story ? 'ON' : 'OFF'}`; }
+function renderSchedule(today, now, settings = state.automationSettings) {
   const target = $('today-schedule'); target.replaceChildren();
   if (!today) { target.append(textNode('p', '今日の予定はまだありません。自動運用を有効にすると最初の確認時に作られます。「作る・作り直す」で今すぐ作れます (AIを使います)。', 'schedule-meta')); return; }
   for (const block of today.blocks) {
@@ -151,11 +151,17 @@ function renderSchedule(today, now) {
     row.append(textNode('time', `${block.start}〜${block.end}`), textNode('span', STATUS_LABELS[block.status] || block.status, `status-tag status-${block.status}`), textNode('span', `${block.activity}: ${block.detail}`));
     target.append(row);
   }
-  const logs = Object.fromEntries((today.post_log || []).filter(item => item.status !== 'manual').map(item => [item.time, item]));
   const lines = [];
   if (today.events?.length) lines.push('出来事: ' + today.events.map(event => `${event.time} ${event.text}`).join(' / '));
-  lines.push('投稿時刻: ' + (today.post_times.map(time => `${time}${logs[time] ? ` (${POST_STATUS[logs[time].status] || logs[time].status})` : time <= now ? ' (確認待ち)' : ''}`).join('、') || 'なし'));
-  for (const item of (today.post_log || []).filter(item => item.text)) lines.push(`${item.at ? new Date(item.at).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }) : item.time} ${POST_STATUS[item.status] || item.status}: ${item.text}`);
+  const timeline = (label, times, log, enabled) => {
+    const logs = Object.fromEntries((log || []).filter(item => item.status !== 'manual').map(item => [item.time, item]));
+    lines.push(`${label}${enabled ? '' : ' (自動はオフ)'}: ` + (times.map(time => `${time}${logs[time] ? ` (${POST_STATUS[logs[time].status] || logs[time].status})` : time <= now ? ' (確認待ち)' : ''}`).join('、') || 'なし'));
+  };
+  timeline('投稿時刻', settings?.post_times || [], today.post_log, settings?.auto_post);
+  timeline('ストーリーの時刻', settings?.story_times || [], today.story_log, settings?.auto_story);
+  const at = item => item.at ? new Date(item.at).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }) : item.time;
+  for (const item of (today.post_log || []).filter(item => item.text)) lines.push(`${at(item)} ${POST_STATUS[item.status] || item.status}: ${item.text}`);
+  for (const item of (today.story_log || []).filter(item => item.uri)) lines.push(`${at(item)} ストーリー${item.status === 'manual' ? ' (手動)' : ''}: ${item.text || '(一言なし)'} ／ 画像: ${item.imagePrompt?.split('\n')[0] || ''}`);
   lines.push(`今日のDM自動返信: ${(today.dm_log || []).length}件` + ((today.dm_log || []).length ? ` (${[...new Set(today.dm_log.map(item => '@' + item.handle))].join('、')})` : ''));
   target.append(textNode('p', lines.join('\n'), 'schedule-meta'));
 }
@@ -172,6 +178,8 @@ async function loadAutomation(character) {
     $('auto-reply').checked = settings.auto_reply; $('auto-post').checked = settings.auto_post;
     $('extra-persona').value = settings.extra_persona; $('post-prompt').value = settings.post_prompt; $('schedule-base').value = settings.schedule_base;
     $('require-unlock').checked = settings.require_unlock; $('unlock-score').value = settings.unlock_score;
+    $('post-times').value = settings.post_times.join(', '); $('auto-story').checked = settings.auto_story; $('story-times').value = settings.story_times.join(', ');
+    state.automationSettings = settings; $('story-preview').classList.add('hidden');
     renderAutomationState(settings); renderSchedule(data.today, data.now); renderRelationships(data.relationships, settings);
     const missing = Object.entries(data.missingScopes).filter(([, scopes]) => scopes.length).map(([kind]) => SCOPE_LABELS[kind]);
     $('automation-scope').textContent = missing.length ? `今のOAuth接続には ${missing.join('・')} の権限がありません。上の「保存してOAuthを再接続」から認証し直してください。` : '';
@@ -194,9 +202,10 @@ async function automationAction(button, message, run) {
 $('automation-form').addEventListener('submit', event => {
   event.preventDefault();
   automationAction($('save-automation'), '自動運用の設定を保存しています…', async id => {
-    const { settings } = await post(`/api/characters/${id}/automation`, { auto_reply: $('auto-reply').checked, auto_post: $('auto-post').checked, extra_persona: $('extra-persona').value, post_prompt: $('post-prompt').value, schedule_base: $('schedule-base').value, require_unlock: $('require-unlock').checked, unlock_score: Number($('unlock-score').value) });
+    const { settings } = await post(`/api/characters/${id}/automation`, { auto_reply: $('auto-reply').checked, auto_post: $('auto-post').checked, extra_persona: $('extra-persona').value, post_prompt: $('post-prompt').value, schedule_base: $('schedule-base').value, require_unlock: $('require-unlock').checked, unlock_score: Number($('unlock-score').value), post_times: $('post-times').value, auto_story: $('auto-story').checked, story_times: $('story-times').value });
     if (state.selectedId !== id) return;
-    $('schedule-base').value = settings.schedule_base; renderAutomationState(settings);
+    $('schedule-base').value = settings.schedule_base; $('post-times').value = settings.post_times.join(', '); $('story-times').value = settings.story_times.join(', ');
+    state.automationSettings = settings; renderAutomationState(settings);
     automationNotice('自動運用の設定を保存しました。数秒以内にバックグラウンドの処理に反映されます。');
   });
 });
@@ -206,10 +215,51 @@ $('regen-schedule').addEventListener('click', () => automationAction($('regen-sc
   renderSchedule(today, new Date().toTimeString().slice(0, 5)); automationNotice('今日の予定を作り直しました。記録済みの投稿・DM返信は残ります。');
 }));
 $('preview-post').addEventListener('click', () => automationAction($('preview-post'), '投稿文を生成しています…', async id => {
-  const { text } = await post(`/api/characters/${id}/automation/preview`, {});
+  const { text, prompt } = await post(`/api/characters/${id}/automation/preview`, {});
   if (state.selectedId !== id) return;
-  $('manual-post').value = text; $('manual-length').textContent = `${text.length} / 300`; automationNotice('投稿文を生成しました。必要なら編集してから投稿してください。');
+  $('manual-post').value = text; $('manual-length').textContent = `${text.length} / 300`;
+  renderPostPrompt(prompt, `この投稿文 (${new Date().toTimeString().slice(0, 5)} 生成) を作るときに AI に渡したプロンプトです。`);
+  automationNotice('投稿文を生成しました。使ったプロンプトは下の「投稿のプロンプト」にあります。必要なら編集してから投稿してください。');
 }));
+function renderPostPrompt(sections, caption) {
+  const items = sections.map(section => {
+    const item = document.createElement('div'); item.className = `account-item prompt-${section.key}`;
+    const body = textNode('pre', section.content || '(空欄のため渡しません)');
+    if (section.key === 'profile') {
+      // The profile is long; keep it folded so the parts that change per post stay visible.
+      const details = document.createElement('details');
+      details.append(textNode('summary', `${section.label} (${section.content.length}文字)`), body);
+      item.append(details);
+    } else item.append(textNode('strong', section.label), body);
+    return item;
+  });
+  $('post-prompt-view').replaceChildren(textNode('p', caption, 'schedule-meta'), ...items);
+}
+$('show-post-prompt').addEventListener('click', () => automationAction($('show-post-prompt'), '投稿のプロンプトを組み立てています… (今日の予定がなければ先に作ります)', async id => {
+  const { prompt } = await post(`/api/characters/${id}/automation/prompt`, {});
+  if (state.selectedId !== id) return;
+  renderPostPrompt(prompt, `今 (${new Date().toTimeString().slice(0, 5)}) 投稿を作るときに AI に渡すプロンプトです。上から順につないだものがシステムメッセージ、最後が依頼です。`);
+  automationNotice('投稿のプロンプトを表示しました。保存前の編集内容は反映されません。');
+}));
+$('preview-story').addEventListener('click', () => automationAction($('preview-story'), 'ストーリーを生成しています… (文と画像を AI で作るので 1 分ほどかかることがあります)', async id => {
+  const { caption, image, prompt } = await post(`/api/characters/${id}/automation/story-preview`, {});
+  if (state.selectedId !== id) return;
+  $('story-image').src = image; $('story-caption').value = caption; $('story-preview').classList.remove('hidden');
+  renderPostPrompt(prompt, `このストーリー (${new Date().toTimeString().slice(0, 5)} 生成) を作るときに AI に渡したプロンプトです。紫が画像生成に渡したプロンプトです。`);
+  automationNotice('ストーリーを生成しました。一言は編集できます。使ったプロンプトは下の「投稿のプロンプト」にあります。');
+}));
+$('send-story').addEventListener('click', () => {
+  const caption = $('story-caption').value.trim();
+  const character = state.characters.find(item => item.id === state.selectedId);
+  if (!confirm(`@${character?.handle} として Pinksky のストーリー (画像投稿) を投稿しますか？\n\n${caption || '(一言なし)'}`)) return;
+  automationAction($('send-story'), 'ストーリーを投稿しています…', async id => {
+    await post(`/api/characters/${id}/automation/story`, { caption });
+    if (state.selectedId !== id) return;
+    $('story-preview').classList.add('hidden');
+    await loadAutomation(state.characters.find(item => item.id === id)); automationNotice('ストーリーを投稿しました。');
+    state.postCursor = null; $('account-posts').replaceChildren(); loadPosts(id);
+  });
+});
 $('send-post').addEventListener('click', () => {
   const text = $('manual-post').value.trim();
   if (!text) { automationNotice('投稿文を入力してください。', true); return; }

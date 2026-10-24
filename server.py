@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import http.cookies
 import http.server
+import base64
 import datetime
 import hashlib
 import json
@@ -52,14 +53,11 @@ def load_env_file(path):
 
 load_env_file(ROOT / ".env")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
-# ChatGPT (OpenAI API) when a key is configured, otherwise the local Ollama.
-AI_PROVIDER = (os.environ.get("AI_PROVIDER", "").strip().lower() or ("openai" if OPENAI_API_KEY else "ollama"))
-if AI_PROVIDER == "openai":
-    AI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-    AI_MODEL = os.environ.get("AI_MODEL", "").strip()
-else:
-    AI_BASE_URL = os.environ.get("AI_BASE_URL", "http://127.0.0.1:11434/v1").rstrip("/")
-    AI_MODEL = os.environ.get("AI_MODEL", "qwen3:4b").strip()
+# All AI calls go to ChatGPT (OpenAI API).
+AI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+AI_MODEL = os.environ.get("AI_MODEL", "").strip()
+IMAGE_MODEL = os.environ.get("IMAGE_MODEL", "").strip() or "gpt-image-2"
+IMAGE_LIMIT = 1_000_000  # Bluesky's maximum size for an image in a post.
 NO_TEMPERATURE = set()  # OpenAI models that only accept the default temperature.
 TLS_CONTEXT = None
 
@@ -80,7 +78,7 @@ def tls_context():
                 print(f"System root certificates unavailable: {exc}", file=sys.stderr)
         TLS_CONTEXT = context
     return TLS_CONTEXT
-# The relationship evaluation can use a stronger local model than the replies.
+# The relationship evaluation can use a different (e.g. stronger) model than the replies.
 RELATIONSHIP_MODEL = os.environ.get("RELATIONSHIP_MODEL", "") or AI_MODEL
 APPVIEW = "https://public.api.bsky.app"
 MAX_BODY = 12_000
@@ -108,6 +106,9 @@ MIGRATED_COLUMNS = (
     ("dm_turns", "relationship_update", "TEXT"),
     ("character_automation", "require_unlock", "INTEGER NOT NULL DEFAULT 1"),
     ("character_automation", "unlock_score", f"INTEGER NOT NULL DEFAULT {automation.DEFAULT_UNLOCK_SCORE}"),
+    ("character_automation", "post_times", f"TEXT NOT NULL DEFAULT '{automation.DEFAULT_POST_TIMES}'"),
+    ("character_automation", "auto_story", "INTEGER NOT NULL DEFAULT 0"),
+    ("character_automation", "story_times", f"TEXT NOT NULL DEFAULT '{automation.DEFAULT_STORY_TIMES}'"),
 )
 UNLOCK_REQUIRED_BY_DEFAULT = True  # Characters without automation settings are locked until DMs open them.
 POSTS_CACHE = {}
@@ -544,8 +545,6 @@ def xrpc(base, method, **params):
 
 
 def ai_error(status, detail, model):
-    if AI_PROVIDER != "openai":
-        return f"AI ({AI_BASE_URL}) がエラーを返しました ({status})"
     if status == 401:
         return "OpenAI の API キーが正しくありません。.env の OPENAI_API_KEY を確認してください"
     if status == 404 or "model" in detail and "not" in detail:
@@ -558,23 +557,16 @@ def ai_error(status, detail, model):
 
 
 def call_ai(messages, json_mode=False, temperature=0.75, model=None, timeout=120):
-    """Chat completion with ChatGPT (OpenAI API) or the local Ollama, both via /chat/completions."""
+    """Chat completion with ChatGPT (OpenAI API) via /chat/completions."""
     model = model or AI_MODEL
-    headers = {"Content-Type": "application/json"}
-    if AI_PROVIDER == "openai":
-        if not OPENAI_API_KEY:
-            raise RuntimeError("OPENAI_API_KEY が設定されていません。.env を確認してください")
-        if not model:
-            raise RuntimeError("AI_MODEL が設定されていません。scripts/check_ai.py で使えるモデルを確認して .env に書いてください")
-        headers["Authorization"] = f"Bearer {OPENAI_API_KEY}"
-        body = {"model": model, "messages": messages}
-        if model not in NO_TEMPERATURE:
-            body["temperature"] = temperature
-    else:
-        parsed = urllib.parse.urlparse(AI_BASE_URL)
-        if parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
-            raise ValueError("Ollama の AI_BASE_URL はローカルの HTTP アドレスにしてください")
-        body = {"model": model, "messages": messages, "stream": False, "temperature": temperature, "reasoning_effort": "none"}
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY が設定されていません。.env を確認してください")
+    if not model:
+        raise RuntimeError("AI_MODEL が設定されていません。scripts/check_ai.py で使えるモデルを確認して .env に書いてください")
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {OPENAI_API_KEY}"}
+    body = {"model": model, "messages": messages}
+    if model not in NO_TEMPERATURE:
+        body["temperature"] = temperature
     if json_mode:
         body["response_format"] = {"type": "json_object"}
     req = urllib.request.Request(AI_BASE_URL + "/chat/completions", data=json.dumps(body, ensure_ascii=False).encode(),
@@ -584,7 +576,7 @@ def call_ai(messages, json_mode=False, temperature=0.75, model=None, timeout=120
             result = json.load(response)
     except urllib.error.HTTPError as exc:
         detail = exc.read(2000).decode("utf-8", "replace").lower()
-        if AI_PROVIDER == "openai" and exc.code == 400 and "temperature" in detail and "temperature" in body:
+        if exc.code == 400 and "temperature" in detail and "temperature" in body:
             NO_TEMPERATURE.add(model)  # Newer models reject custom temperatures; retry with the default.
             return call_ai(messages, json_mode, temperature, model, timeout)
         print(f"AI error {exc.code}: {detail[:300]}", file=sys.stderr)
@@ -602,6 +594,39 @@ def call_ai(messages, json_mode=False, temperature=0.75, model=None, timeout=120
     return content
 
 
+def generate_image(prompt):
+    """One JPEG from the OpenAI Images API, small enough for a Bluesky image post."""
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY が設定されていません。.env を確認してください")
+    width, height = automation.IMAGE_SIZE
+    for compression in (80, 55):
+        body = {"model": IMAGE_MODEL, "prompt": prompt, "n": 1, "size": f"{width}x{height}",
+                "output_format": "jpeg", "output_compression": compression}
+        req = urllib.request.Request(AI_BASE_URL + "/images/generations", data=json.dumps(body, ensure_ascii=False).encode(),
+                                     headers={"Content-Type": "application/json", "Authorization": f"Bearer {OPENAI_API_KEY}"},
+                                     method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=300, context=tls_context()) as response:
+                result = json.load(response)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read(2000).decode("utf-8", "replace").lower()
+            print(f"Image error {exc.code}: {detail[:300]}", file=sys.stderr)
+            if "safety" in detail or "moderation" in detail:
+                raise RuntimeError("画像の内容が OpenAI の安全基準で拒否されました。もう一度生成してください") from exc
+            raise RuntimeError(ai_error(exc.code, detail, IMAGE_MODEL).replace("AI_MODEL", "IMAGE_MODEL")) from exc
+        except TimeoutError as exc:
+            raise RuntimeError("画像の生成が時間内に終わりませんでした。少し待って再試行してください") from exc
+        except (urllib.error.URLError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"画像生成 ({AI_BASE_URL}) に接続できません") from exc
+        try:
+            image = base64.b64decode(result["data"][0]["b64_json"])
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise RuntimeError("画像生成の応答形式が正しくありません") from exc
+        if len(image) <= IMAGE_LIMIT:
+            return image
+    raise RuntimeError("生成した画像が Bluesky の上限 (1MB) を超えました。もう一度生成してください")
+
+
 def unlock_secrets(db, visitor, did, character_id, affinity):
     # Once unlocked, a secret stays unlocked even if affinity drops later.
     for level in SECRET_LEVELS:
@@ -615,7 +640,7 @@ def secret_title(level, title):
 
 
 def character_posts(did):
-    """Recent public posts of the character, used to judge references to them. Cached briefly."""
+    """Recent public posts of an account (the character or a DM partner). Cached briefly."""
     cached = POSTS_CACHE.get(did)
     if cached and time.time() - cached[0] < POSTS_TTL:
         return cached[1]
@@ -625,7 +650,8 @@ def character_posts(did):
         print(f"Character posts unavailable: {type(exc).__name__}", file=sys.stderr)
         return cached[1] if cached else []
     posts = [{"uri": item["post"].get("uri", ""), "date": str(item["post"]["record"].get("createdAt", ""))[:16].replace("T", " "),
-              "text": item["post"]["record"]["text"]}
+              "text": item["post"]["record"]["text"],
+              "story": automation.STORY_TAG in (item["post"]["record"].get("tags") or [])}
              for item in feed if isinstance(item.get("post", {}).get("record", {}).get("text"), str)
              and item["post"].get("author", {}).get("did") == did]
     POSTS_CACHE[did] = (time.time(), posts)
@@ -633,7 +659,7 @@ def character_posts(did):
 
 
 def reply_text(answer):
-    """Reply text from a JSON {"reply": ...} answer (JSON mode keeps qwen3 from thinking aloud)."""
+    """Reply text from a JSON {"reply": ...} answer (JSON mode keeps the model from adding commentary)."""
     try:
         parsed = json.loads(answer)
     except (json.JSONDecodeError, TypeError):
@@ -644,7 +670,7 @@ def reply_text(answer):
 
 
 def generate_reply(messages, attempts=2):
-    """Retry once when the model echoes its context or Ollama aborts a looping generation."""
+    """Retry once when the model echoes its context or returns a malformed answer."""
     for attempt in range(attempts):
         try:
             return reply_text(call_ai(messages, True))[:700]
@@ -654,10 +680,10 @@ def generate_reply(messages, attempts=2):
 
 
 def evaluate_message(character, scores, message, history, memories, posts):
-    """Ask the local AI how the message matches each condition; malformed output means no change."""
+    """Ask the AI how the message matches each condition; malformed output means no change."""
     messages = relationship.evaluation_messages(character, scores, message, history, memories, posts)
     for _ in range(2):
-        # A separate evaluation model may have to be loaded into memory first.
+        # A long timeout, since a reasoning model can take a while on the evaluation.
         evaluation = relationship.parse_evaluation(call_ai(messages, True, 0.2, RELATIONSHIP_MODEL, 300))
         if evaluation is not None:
             return evaluation
@@ -822,6 +848,7 @@ def send_game_chat(visitor, selected, did, message, client_message_id):
                 f"プレイヤー情報: {game['profile_context']}\n"
                 f"{relationship.reply_guidance(update['after'])}\n"
                 f"覚えていること:\n{memory_lines}\n"
+                f"{automation.posts_text(character_posts(character_did), character_posts(did), 'プレイヤー')}\n"
                 f"最近のDM（原文）:\n{dm_lines[-6000:]}"
             )
             recent = [{"role": "user" if mine else "assistant", "content": text[:1000]} for mine, text in history][-15:]
@@ -1037,7 +1064,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(raw)
                 return
             if parsed.path == "/api/health":
-                return self.send_json(200, {"ok": True, "aiProvider": AI_PROVIDER, "aiModel": AI_MODEL, "relationshipModel": RELATIONSHIP_MODEL})
+                return self.send_json(200, {"ok": True, "aiModel": AI_MODEL, "relationshipModel": RELATIONSHIP_MODEL, "imageModel": IMAGE_MODEL})
             if parsed.path == "/api/auth":
                 visitor, cookie = self.visitor()
                 with DB_LOCK, database() as db:
@@ -1256,7 +1283,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     db.execute("UPDATE characters SET oauth_did='',oauth_owner='' WHERE id=?", (selected,))
                 forget_if_unused(character["oauth_did"])
                 return self.send_json(200, {"ok": True}, cookie)
-            automation_post = re.fullmatch(r"/api/characters/(\d+)/automation(?:/(schedule|preview|post))?", self.path)
+            automation_post = re.fullmatch(r"/api/characters/(\d+)/automation(?:/(schedule|preview|prompt|post|story-preview|story))?", self.path)
             if automation_post:
                 selected = int(automation_post[1])
                 action = automation_post[2]
@@ -1270,6 +1297,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         "schedule_base": str(body.get("schedule_base", "")).strip(),
                         "require_unlock": body.get("require_unlock") is not False,
                         "unlock_score": body.get("unlock_score", automation.DEFAULT_UNLOCK_SCORE),
+                        "post_times": automation.parse_times(body.get("post_times", automation.DEFAULT_POST_TIMES), "投稿時刻"),
+                        "auto_story": body.get("auto_story") is True,
+                        "story_times": automation.parse_times(body.get("story_times", automation.DEFAULT_STORY_TIMES), "ストーリーの時刻"),
                     }
                     if type(settings["unlock_score"]) is not int or not 1 <= settings["unlock_score"] <= 100:
                         raise ValueError("ReAl の解放に必要な好感度は1〜100の整数で入力してください")
@@ -1279,20 +1309,34 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     settings["schedule_base"] = json.dumps(base, ensure_ascii=False, indent=2)
                     with DB_LOCK, database() as db:
                         db.execute("""INSERT INTO character_automation(character_id,auto_reply,auto_post,post_prompt,extra_persona,schedule_base,
-                                      require_unlock,unlock_score,updated_at)
-                                      VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(character_id) DO UPDATE SET auto_reply=excluded.auto_reply,
+                                      require_unlock,unlock_score,post_times,auto_story,story_times,updated_at)
+                                      VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(character_id) DO UPDATE SET auto_reply=excluded.auto_reply,
                                       auto_post=excluded.auto_post,post_prompt=excluded.post_prompt,extra_persona=excluded.extra_persona,
                                       schedule_base=excluded.schedule_base,require_unlock=excluded.require_unlock,
-                                      unlock_score=excluded.unlock_score,updated_at=excluded.updated_at""",
+                                      unlock_score=excluded.unlock_score,post_times=excluded.post_times,auto_story=excluded.auto_story,
+                                      story_times=excluded.story_times,updated_at=excluded.updated_at""",
                                    (selected, int(settings["auto_reply"]), int(settings["auto_post"]), settings["post_prompt"],
                                     settings["extra_persona"], settings["schedule_base"], int(settings["require_unlock"]),
-                                    settings["unlock_score"], int(time.time())))
+                                    settings["unlock_score"], ",".join(settings["post_times"]), int(settings["auto_story"]),
+                                    ",".join(settings["story_times"]), int(time.time())))
                     return self.send_json(200, {"settings": settings}, cookie)
                 if action == "schedule":
                     today = RUNNER.day(target, datetime.date.today(), regen=body.get("regen") is True)
                     return self.send_json(200, {"today": today}, cookie)
                 if action == "preview":
-                    return self.send_json(200, {"text": RUNNER.preview_post(target)}, cookie)
+                    text, sections = RUNNER.preview_post(target)
+                    return self.send_json(200, {"text": text, "prompt": sections}, cookie)
+                if action == "prompt":
+                    return self.send_json(200, {"prompt": RUNNER.post_prompt(target)}, cookie)
+                if action == "story-preview":
+                    story = RUNNER.preview_story(target)
+                    return self.send_json(200, {"caption": story["caption"], "prompt": story["prompt"],
+                                                "image": "data:image/jpeg;base64," + base64.b64encode(story["image"]).decode()}, cookie)
+                if action == "story":
+                    caption = str(body.get("caption", "")).strip()
+                    if len(caption) > automation.POST_LIMIT:
+                        raise ValueError(f"ストーリーの一言は{automation.POST_LIMIT}文字までです")
+                    return self.send_json(200, {"record": RUNNER.post_previewed_story(target, caption)}, cookie)
                 text = str(body.get("text", "")).strip()
                 if not 1 <= len(text) <= automation.POST_LIMIT:
                     raise ValueError(f"投稿は1〜{automation.POST_LIMIT}文字で入力してください")

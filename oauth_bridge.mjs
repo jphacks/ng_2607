@@ -20,10 +20,11 @@ const characterScope = [
   ...dmScope,
   `rpc:chat.bsky.convo.listConvos?aud=${chatAudience}`,
   `rpc:chat.bsky.convo.getConvoAvailability?aud=${chatAudience}`,
-  // Automation (automation.py): DM polling, read receipts and scheduled posts.
+  // Automation (automation.py): DM polling, read receipts, scheduled posts and Pinksky stories (image uploads).
   `rpc:chat.bsky.convo.getLog?aud=${chatAudience}`,
   `rpc:chat.bsky.convo.updateRead?aud=${chatAudience}`,
   'repo:app.bsky.feed.post?action=create',
+  'blob:image/*',
 ].join(' ')
 
 fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
@@ -147,6 +148,19 @@ async function run(command) {
       rt.detectFacetsWithoutResolution()
       const facets = (rt.facets || []).filter(facet => facet.features.every(feature => feature.$type !== 'app.bsky.richtext.facet#mention'))
       const result = await agent.post({ text: rt.text, langs: ['ja'], ...(facets.length ? { facets } : {}) })
+      return { uri: result.uri, cid: result.cid }
+    }
+    case 'createStory': {
+      // A Pinksky/Pinkleap story is a Bluesky image post carrying the story tag.
+      const agent = await agentFor(command.did)
+      const upload = await agent.uploadBlob(Buffer.from(command.image, 'base64'), { encoding: command.mime })
+      const result = await agent.post({
+        text: command.text, langs: ['ja'], tags: [command.tag],
+        embed: {
+          $type: 'app.bsky.embed.images',
+          images: [{ image: upload.data.blob, alt: command.alt, aspectRatio: { width: command.width, height: command.height } }],
+        },
+      })
       return { uri: result.uri, cid: result.cid }
     }
     default: throw new Error('Unknown operation')
