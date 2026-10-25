@@ -2,6 +2,7 @@ import base64
 import datetime
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -49,6 +50,12 @@ class FakeBluesky:
         if op == "createPost":
             self.posts.append(command)
             return {"uri": f"at://{CHAR_DID}/app.bsky.feed.post/{len(self.posts)}", "cid": "cid"}
+        if op == "convoWithMember":
+            convo = next((c for c in self.convos if any(m["did"] == command["memberDid"] for m in c["members"])), None)
+            if convo is None:
+                self.add_convo(f"new-{command['memberDid']}", command["memberDid"], "new.test", [])
+                convo = self.convos[-1]
+            return {"convo": convo}
         if op == "createStory":
             self.stories.append(command)
             return {"uri": f"at://{CHAR_DID}/app.bsky.feed.post/s{len(self.stories)}", "cid": "cid"}
@@ -59,7 +66,7 @@ class FakeBluesky:
     def add_convo(self, convo_id, partner_did, handle, texts):
         self.convos.append({"id": convo_id, "status": "accepted", "muted": False,
                             "members": [{"did": CHAR_DID}, {"did": partner_did, "handle": handle}],
-                            "lastMessage": {"sender": {"did": texts[-1][0]}, "text": texts[-1][1]}})
+                            "lastMessage": {"sender": {"did": texts[-1][0]}, "text": texts[-1][1]} if texts else None})
         self.history[convo_id] = [{"id": f"{convo_id}-{i}", "sender": {"did": did}, "text": text} for i, (did, text) in enumerate(texts)]
 
 
@@ -203,6 +210,77 @@ class AutomationTest(unittest.TestCase):
         self.assertIn("好きです。付き合ってください", judged[0])
         with server.database() as db:
             self.assertTrue(server.relationship_state(db, 1, STRANGER_DID)["lover"])
+
+    def test_auto_reply_ignores_dms_before_a_context_reset(self):
+        self.save(require_unlock=False)
+        self.story_day(datetime.datetime.now())
+        self.bsky.add_convo("c1", STRANGER_DID, "stranger.test", [(STRANGER_DID, "前に振られた話"), (STRANGER_DID, "新しい話")])
+        self.bsky.history["c1"][0]["sentAt"] = "2026-10-20T00:00:00Z"
+        self.bsky.history["c1"][1]["sentAt"] = "2999-01-01T00:00:00Z"
+        with server.database() as db:
+            server.reset_context(db, 1, STRANGER_DID)
+        seen = []
+
+        def ai(messages, json_mode=False, temperature=0.75, model=None, timeout=120):
+            seen.append("\n".join(str(m["content"]) for m in messages))
+            if "評価係" in messages[0]["content"]:
+                return json.dumps({"evaluations": [], "reason": "なし", "memories": []})
+            return "うんうん"
+        with patch.object(server, "oauth_call", side_effect=self.bsky), patch.object(server, "call_ai", side_effect=ai):
+            with server.database() as db:
+                target = server.automation_target(db, 1, VISITOR)
+            server.RUNNER.reply_all(target, server.RUNNER.load_day(1, datetime.date.today()))
+        self.assertEqual(len(self.bsky.sent), 1)
+        self.assertTrue(any("新しい話" in text for text in seen))
+        self.assertFalse(any("前に振られた話" in text for text in seen))
+
+    def reach_out_setup(self, axes, posts):
+        self.save(require_unlock=False, auto_reach_out=True)
+        self.story_day(datetime.datetime.now())
+        with server.database() as db:
+            server.edit_relationship(db, 1, STRANGER_DID, "stranger.test", axes, True, [])
+        now = time.time()
+        feed = [{"uri": f"at://stranger/post/{i}", "date": "x", "text": text, "story": False, "createdAt": now - age}
+                for i, (text, age) in enumerate(posts)]
+        return patch.object(server, "character_posts", side_effect=lambda did: feed if did == STRANGER_DID else [])
+
+    def reach_ai(self, prompts):
+        def ai(messages, json_mode=False, temperature=0.75, model=None, timeout=120):
+            prompts.append(messages[0]["content"])
+            return "その猫かわいい！名前あるの？"
+        return ai
+
+    def test_reach_out_talks_about_a_recent_post_once_a_day(self):
+        posts = self.reach_out_setup({"affection": 60, "trust": 50, "romance": 40},
+                                     [("昨日の旅行の写真", 4 * 24 * 3600), ("猫を拾った", 3600), ("", 60)])
+        prompts = []
+        with posts, patch.object(server, "oauth_call", side_effect=self.bsky), patch.object(server, "call_ai", side_effect=self.reach_ai(prompts)):
+            with server.database() as db:
+                target = server.automation_target(db, 1, VISITOR)
+            record = server.RUNNER.reach_out(target)
+            self.assertIsNone(server.RUNNER.reach_out(target))  # Once a day per person.
+        self.assertEqual((record["handle"], record["post"]), ("stranger.test", "at://stranger/post/1"))  # Newest post with text within 3 days.
+        self.assertEqual([item["text"] for item in self.bsky.sent], ["その猫かわいい！名前あるの？"])
+        self.assertIn("猫を拾った", prompts[0])
+        self.assertNotIn("昨日の旅行の写真", prompts[0])
+        self.assertIn("「なかよし」", prompts[0])  # Talks in the current stage's manner.
+        log = server.RUNNER.load_day(1, datetime.date.today())["dm_log"]
+        self.assertTrue(log[-1]["reachOut"])
+
+    def test_reach_out_only_for_close_people_and_no_double_texting(self):
+        posts = self.reach_out_setup({"affection": 40, "trust": 30, "romance": 10}, [("猫を拾った", 3600)])  # 友達 stage.
+        with posts, patch.object(server, "oauth_call", side_effect=self.bsky), patch.object(server, "call_ai", side_effect=self.reach_ai([])):
+            with server.database() as db:
+                target = server.automation_target(db, 1, VISITOR)
+                self.assertEqual(server.reach_out_candidates(db, 1), [])
+                server.edit_relationship(db, 1, STRANGER_DID, "stranger.test", {"affection": 10, "trust": 10, "romance": 10}, True, [], True)
+                self.assertEqual(len(server.reach_out_candidates(db, 1)), 1)  # Lovers always qualify.
+            self.bsky.add_convo("c1", STRANGER_DID, "stranger.test", [(STRANGER_DID, "またね"), (CHAR_DID, "またね！")])
+            self.assertIsNone(server.RUNNER.reach_out(target))  # The character spoke last: wait for an answer.
+            status, data = invoke("do_POST", "/api/characters/1/relationship/reach-out", {"did": STRANGER_DID})
+        self.assertEqual(status, 200)  # The admin test button sends anyway.
+        self.assertEqual(len(self.bsky.sent), 1)
+        self.assertTrue(data["relationships"][0]["lastReachOutAt"])
 
     def test_post_due_posts_latest_and_skips_stale_times(self):
         self.save(auto_reply=False, auto_post=True, post_times="15:00, 09:00,11:50")

@@ -119,8 +119,7 @@
         const result = await request('/api/game/chat', {
           method: 'POST', signal,
           body: {characterId: Number(before.partnerId), did: user.did,
-                 message: payload.text, clientMessageId: payload.clientMessageId,
-                 ...(payload.confession ? {confession: true} : {})},
+                 message: payload.text, clientMessageId: payload.clientMessageId},
         });
         return {game: asSnapshot(result.game, before.partnerId),
                 dmMessages: result.dmMessages || [], convoId: result.convoId,

@@ -121,6 +121,7 @@ MIGRATED_COLUMNS = (
     ("character_automation", "auto_story", "INTEGER NOT NULL DEFAULT 0"),
     ("character_automation", "story_times", f"TEXT NOT NULL DEFAULT '{automation.DEFAULT_STORY_TIMES}'"),
     ("character_automation", "story_image_prompt", "TEXT NOT NULL DEFAULT ''"),
+    ("character_automation", "auto_reach_out", "INTEGER NOT NULL DEFAULT 0"),
 )
 UNLOCK_REQUIRED_BY_DEFAULT = True  # Characters without automation settings are locked until DMs open them.
 POSTS_CACHE = {}
@@ -232,6 +233,20 @@ def init_db():
                 visitor TEXT PRIMARY KEY,
                 did TEXT NOT NULL,
                 updated_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS dm_reach_outs (
+                character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+                partner_did TEXT NOT NULL,
+                post_uri TEXT NOT NULL,
+                message_id TEXT,
+                sent_at REAL NOT NULL,
+                PRIMARY KEY (character_id, partner_did, post_uri)
+            );
+            CREATE TABLE IF NOT EXISTS dm_context_resets (
+                character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+                partner_did TEXT NOT NULL,
+                reset_at REAL NOT NULL,
+                PRIMARY KEY (character_id, partner_did)
             );
             CREATE TABLE IF NOT EXISTS character_secrets (
                 character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
@@ -428,7 +443,10 @@ def dm_relationships_json(selected):
                            "overall": relationship.overall(scores), "label": "恋人" if lover else relationship.label(scores),
                            "stage": relationship.stage_info(scores, stages, lover), "lover": lover,
                            "unlocked": bool(row["unlocked_at"]), "updatedAt": row["updated_at"],
-                           "lastDelta": json.loads(last["data"])["delta"] if last else None, "memories": memories})
+                           "lastDelta": json.loads(last["data"])["delta"] if last else None, "memories": memories,
+                           "contextResetAt": context_reset_at(db, selected, row["partner_did"]) or None,
+                           "lastReachOutAt": db.execute("SELECT max(sent_at) FROM dm_reach_outs WHERE character_id=? AND partner_did=?",
+                                                        (selected, row["partner_did"])).fetchone()[0]})
     return result
 
 
@@ -479,6 +497,56 @@ def dm_scores(db, selected, partner_did):
                      (selected, partner_did)).fetchone() if partner_did else None
     scores = {axis: relationship.round1(row[axis]) for axis in relationship.AXES} if row else dict(relationship.INITIAL)
     return scores, bool(row and row["unlocked_at"])
+
+
+def context_reset_at(db, selected, partner_did):
+    """When the admin last reset the conversation context with this person (0 when never)."""
+    row = db.execute("SELECT reset_at FROM dm_context_resets WHERE character_id=? AND partner_did=?",
+                     (selected, partner_did)).fetchone()
+    return row["reset_at"] if row else 0.0
+
+
+def reset_context(db, selected, partner_did):
+    db.execute("""INSERT INTO dm_context_resets(character_id,partner_did,reset_at) VALUES(?,?,?)
+                  ON CONFLICT(character_id,partner_did) DO UPDATE SET reset_at=excluded.reset_at""",
+               (selected, partner_did, time.time()))
+
+
+def after_reset(messages, reset_at):
+    """DMs sent after the context reset. The DMs stay on Bluesky; the AI just no longer sees the older ones."""
+    if not reset_at:
+        return messages
+    kept = []
+    for item in messages:
+        try:
+            sent_at = datetime.datetime.fromisoformat(str(item["sentAt"]).replace("Z", "+00:00")).timestamp()
+        except (KeyError, ValueError, TypeError):
+            continue
+        if sent_at > reset_at:
+            kept.append(item)
+    return kept
+
+
+def reach_out_candidates(db, selected, partner_did=None):
+    """People close enough for the character to message first (なかよし or closer, or lovers), most recent first."""
+    rows = db.execute("SELECT * FROM dm_relationships WHERE character_id=?" + (" AND partner_did=?" if partner_did else "")
+                      + " ORDER BY updated_at DESC", (selected, partner_did) if partner_did else (selected,)).fetchall()
+    result = []
+    for row in rows:
+        scores = {axis: relationship.round1(row[axis]) for axis in relationship.AXES}
+        lover = bool(row["lover_at"])
+        if not lover and relationship.stage_index(scores) < automation.REACH_OUT_STAGE:
+            continue
+        sent = db.execute("SELECT post_uri,sent_at FROM dm_reach_outs WHERE character_id=? AND partner_did=?",
+                          (selected, row["partner_did"])).fetchall()
+        result.append({"did": row["partner_did"], "handle": row["partner_handle"], "scores": scores, "lover": lover,
+                       "usedPosts": {item["post_uri"] for item in sent}, "lastReachOut": max((item["sent_at"] for item in sent), default=0.0)})
+    return result
+
+
+def record_reach_out(db, selected, partner_did, post_uri, message_id):
+    db.execute("INSERT OR REPLACE INTO dm_reach_outs(character_id,partner_did,post_uri,message_id,sent_at) VALUES(?,?,?,?,?)",
+               (selected, partner_did, post_uri, message_id, time.time()))
 
 
 def is_lover(db, selected, partner_did):
@@ -759,6 +827,13 @@ def secret_title(level, title):
     return title or f"好感度{level}のヒミツ"
 
 
+def post_time(value):
+    try:
+        return datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
 def character_posts(did):
     """Recent public posts of an account (the character or a DM partner). Cached briefly."""
     cached = POSTS_CACHE.get(did)
@@ -771,7 +846,8 @@ def character_posts(did):
         return cached[1] if cached else []
     posts = [{"uri": item["post"].get("uri", ""), "date": str(item["post"]["record"].get("createdAt", ""))[:16].replace("T", " "),
               "text": item["post"]["record"]["text"],
-              "story": automation.STORY_TAG in (item["post"]["record"].get("tags") or [])}
+              "story": automation.STORY_TAG in (item["post"]["record"].get("tags") or []),
+              "createdAt": post_time(item["post"]["record"].get("createdAt"))}
              for item in feed if isinstance(item.get("post", {}).get("record", {}).get("text"), str)
              and item["post"].get("author", {}).get("did") == did]
     POSTS_CACHE[did] = (time.time(), posts)
@@ -810,11 +886,10 @@ def evaluate_message(character, scores, message, history, memories, posts):
     return relationship.no_change("評価結果を読み取れなかったため、関係は変化させませんでした")
 
 
-def decide_confession(character, update, lover, message, history, memories, requested=False):
+def decide_confession(character, update, lover, message, history, memories):
     """Settle a confession in this message. At the last stage the model judges it from the scores and the
-    context; a rejection lowers the relationship. Stored with the update, so a resent reply keeps the result.
-    requested: sent with the confession button, so it is judged even when the evaluation missed it."""
-    outcome = relationship.confession_outcome(update, lover, requested)
+    context; a rejection lowers the relationship. Stored with the update, so a resent reply keeps the result."""
+    outcome = relationship.confession_outcome(update, lover)
     if outcome != "judge":
         return {**update, "confession": outcome}
     messages = relationship.confession_messages(character, update["after"], message, history, memories)
@@ -880,7 +955,7 @@ def update_turn(key, assignments, *values):
         db.execute(f"UPDATE dm_turns SET {assignments} WHERE " + TURN_KEY, (*values, *key))
 
 
-def send_game_chat(visitor, selected, did, message, client_message_id, confession=False):
+def send_game_chat(visitor, selected, did, message, client_message_id):
     """Send both sides of a game turn as Bluesky DMs; keep only game metadata locally."""
     digest = hashlib.sha256(message.encode("utf-8")).hexdigest()
     with CHAT_LOCK:
@@ -896,11 +971,9 @@ def send_game_chat(visitor, selected, did, message, client_message_id, confessio
                 raise ValueError("自分自身のアカウントとはDMできません")
             key = (visitor, did, selected, game["session"], client_message_id)
             turn = db.execute("SELECT * FROM dm_turns WHERE " + TURN_KEY, key).fetchone()
-            if turn and (turn["message_hash"] != digest or bool(turn["confession"]) != confession):
+            if turn and turn["message_hash"] != digest:
                 raise ValueError("同じメッセージIDで異なる内容は送信できません")
             new_turn = turn is None
-            if new_turn and confession and (is_lover(db, selected, did) or not relationship.confession_ready(dm_scores(db, selected, did)[0])):
-                raise ValueError(f"告白は総合好感度{relationship.STAGE_MINIMUMS[-1]}以上で、まだ恋人ではない場合に送れます")
 
 
         # getConvoForMembers resolves the one-to-one DM and can create it for a first message.
@@ -918,9 +991,6 @@ def send_game_chat(visitor, selected, did, message, client_message_id, confessio
                 db.execute("""INSERT INTO dm_turns(visitor,did,character_id,game_session,client_message_id,
                               message_hash,status,created_at) VALUES(?,?,?,?,?,?,?,?)""",
                            (*key, digest, "prepared", int(time.time())))
-
-        if new_turn:
-            update_turn(key, "confession=?", int(confession))
 
         def find_message(sender, text_hash, created_at):
             for item in recent_messages:
@@ -967,7 +1037,9 @@ def send_game_chat(visitor, selected, did, message, client_message_id, confessio
                     "relationshipUpdate": json.loads(turn["relationship_update"]) if turn["relationship_update"] else None}
 
         if turn["status"] == "user_sent":
-            context_items = [item for item in reversed(recent_messages[:20]) if isinstance(item.get("text"), str)]
+            with DB_LOCK, database() as db:
+                reset_at = context_reset_at(db, selected, did)
+            context_items = [item for item in reversed(after_reset(recent_messages[:20], reset_at)) if isinstance(item.get("text"), str)]
             history = [(item.get("sender", {}).get("did") == did, item["text"]) for item in context_items]
             if history and history[-1] == (True, message):
                 history.pop()  # The message being evaluated is passed separately.
@@ -982,7 +1054,7 @@ def send_game_chat(visitor, selected, did, message, client_message_id, confessio
                                           character_posts(character_did))
             update = {**relationship.update(state["scores"], evaluation, state["recent"], weights), "channel": "real"}
             # Decided before the reply and stored with the turn, so a resent reply keeps the same outcome.
-            update = decide_confession(character, update, state["lover"], message, history, memories, confession)
+            update = decide_confession(character, update, state["lover"], message, history, memories)
             # STEP 7: reply in a way that matches the updated relationship.
             memory_lines = "\n".join(f"- [{relationship.MEMORY_KINDS[item['kind']]}] {item['text']}"
                                       for item in memories + update["memories"]) or "(なし)"
@@ -1486,7 +1558,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 saved = BASE_IMAGE_DIR / f"{handle}{ {'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp'}[mime] }"
                 saved.write_bytes(data)
                 return self.send_json(200, {"ok": True, "file": f"shared/base_images/{saved.name}"}, cookie)
-            relationship_post = re.fullmatch(r"/api/characters/(\d+)/relationship(?:/(delete))?", self.path)
+            reach_match = re.fullmatch(r"/api/characters/(\d+)/relationship/reach-out", self.path)
+            if reach_match:
+                selected = int(reach_match[1])
+                with DB_LOCK, database() as db:
+                    target = automation_target(db, selected, visitor)
+                partner_did = str(body.get("did", "")).strip()
+                record = RUNNER.reach_out(target, partner_did=partner_did)
+                if record is None:
+                    raise ValueError("話しかけられません。なかよし以上の相手で、まだ話題にしていない直近3日以内の投稿が必要です")
+                return self.send_json(200, {"record": record, "relationships": dm_relationships_json(selected)}, cookie)
+            relationship_post = re.fullmatch(r"/api/characters/(\d+)/relationship(?:/(delete|context))?", self.path)
             if relationship_post:
                 selected = int(relationship_post[1])
                 with DB_LOCK, database() as db:
@@ -1507,6 +1589,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         raise ValueError("キャラ自身との関係は作れません")
                     if relationship_post[2] == "delete":
                         db.execute("DELETE FROM dm_relationships WHERE character_id=? AND partner_did=?", (selected, partner_did))
+                        reset_context(db, selected, partner_did)  # Older DMs would otherwise steer the fresh start.
+                        db.execute("DELETE FROM dm_reach_outs WHERE character_id=? AND partner_did=?", (selected, partner_did))
+                    elif relationship_post[2] == "context":
+                        reset_context(db, selected, partner_did)
                     else:
                         edit_relationship(db, selected, partner_did, handle, body.get("axes"), body.get("unlocked") is True,
                                           body.get("memories", []), body.get("lover") is True)
@@ -1529,6 +1615,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         "auto_story": body.get("auto_story") is True,
                         "story_times": automation.parse_times(body.get("story_times", automation.DEFAULT_STORY_TIMES), "ストーリーの時刻"),
                         "story_image_prompt": str(body.get("story_image_prompt", "")).strip(),
+                        "auto_reach_out": body.get("auto_reach_out") is True,
                     }
                     if len(settings["story_image_prompt"]) > automation.STORY_IMAGE_PROMPT_LIMIT:
                         raise ValueError(f"ストーリー画像の指示は{automation.STORY_IMAGE_PROMPT_LIMIT:,}文字までです")
@@ -1540,17 +1627,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     settings["schedule_base"] = json.dumps(base, ensure_ascii=False, indent=2)
                     with DB_LOCK, database() as db:
                         db.execute("""INSERT INTO character_automation(character_id,auto_reply,auto_post,post_prompt,extra_persona,schedule_base,
-                                      require_unlock,unlock_score,post_times,auto_story,story_times,story_image_prompt,updated_at)
-                                      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(character_id) DO UPDATE SET auto_reply=excluded.auto_reply,
+                                      require_unlock,unlock_score,post_times,auto_story,story_times,story_image_prompt,auto_reach_out,updated_at)
+                                      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(character_id) DO UPDATE SET auto_reply=excluded.auto_reply,
                                       auto_post=excluded.auto_post,post_prompt=excluded.post_prompt,extra_persona=excluded.extra_persona,
                                       schedule_base=excluded.schedule_base,require_unlock=excluded.require_unlock,
                                       unlock_score=excluded.unlock_score,post_times=excluded.post_times,auto_story=excluded.auto_story,
                                       story_times=excluded.story_times,story_image_prompt=excluded.story_image_prompt,
+                                      auto_reach_out=excluded.auto_reach_out,
                                       updated_at=excluded.updated_at""",
                                    (selected, int(settings["auto_reply"]), int(settings["auto_post"]), settings["post_prompt"],
                                     settings["extra_persona"], settings["schedule_base"], int(settings["require_unlock"]),
                                     settings["unlock_score"], ",".join(settings["post_times"]), int(settings["auto_story"]),
-                                    ",".join(settings["story_times"]), settings["story_image_prompt"], int(time.time())))
+                                    ",".join(settings["story_times"]), settings["story_image_prompt"], int(settings["auto_reach_out"]),
+                                    int(time.time())))
                     return self.send_json(200, {"settings": settings}, cookie)
                 if action == "schedule":
                     today = RUNNER.day(target, datetime.date.today(), regen=body.get("regen") is True)
@@ -1703,10 +1792,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     raise PermissionError("認証したユーザーとDIDが一致しません")
                 if not client_message_id:
                     raise ValueError("メッセージIDを指定してください")
-                confession = body.get("confession", False)
-                if not isinstance(confession, bool):
-                    raise ValueError("confession must be boolean")
-                result = send_game_chat(visitor, selected, did, message, client_message_id, confession)
+                result = send_game_chat(visitor, selected, did, message, client_message_id)
                 return self.send_json(200, result, cookie)
             self.send_json(404, {"error": "見つかりません"}, cookie)
         except Exception as exc:

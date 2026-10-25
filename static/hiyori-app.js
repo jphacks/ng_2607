@@ -463,14 +463,13 @@
     if (current().pending && !retry) return;
     const token = epoch, before = snapshot(), session = current();
     clearError(); busy = true;
-    const pending = retry ? session.pending : {clientMessageId: crypto.randomUUID(), text, createdAt: new Date().toISOString(), confession: globalThis.UIRomance?.confessing || false};
+    const pending = retry ? session.pending : {clientMessageId: crypto.randomUUID(), text, createdAt: new Date().toISOString()};
     pending.status = 'sending'; session.pending = pending; session.draft = '';
     input.value = ''; resizeInput();
     renderMessages({force: true, animate: true}); setControls();
     mainAbort = new AbortController();
     try {
-      const result = await api.send(before, {clientMessageId: pending.clientMessageId, text,
-        confession: pending.confession || false}, mainAbort.signal);
+      const result = await api.send(before, {clientMessageId: pending.clientMessageId, text}, mainAbort.signal);
       if (token !== epoch) return;
       const data = result.game;
       session.snapshot = data; session.pending = null;

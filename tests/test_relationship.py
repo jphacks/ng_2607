@@ -97,8 +97,8 @@ class StageTest(unittest.TestCase):
             return {"after": {"affection": total, "trust": total, "romance": total},
                     "breakdown": [{"condition": rel.CONFESSION, "score": score}]}
         self.assertEqual(rel.confession_outcome(update(80), lover=False), "judge")
-        self.assertEqual(rel.confession_outcome(update(80, 0.3), lover=False), "judge")  # The judge decides if it is clear.
-        self.assertIsNone(rel.confession_outcome(update(80, 0.2), lover=False))
+        # At the last stage every message goes to the judge, which reads the context to find a confession.
+        self.assertEqual(rel.confession_outcome(update(80, 0.0), lover=False), "judge")
         self.assertEqual(rel.confession_outcome(update(60), lover=False), "decline")
         self.assertIsNone(rel.confession_outcome(update(60, 0.4), lover=False))
         self.assertIsNone(rel.confession_outcome(update(80), lover=True))  # Already lovers.
@@ -304,6 +304,38 @@ class RelationshipGameTest(ServerFixture):
                 "id": 1, "profile": "おっとり", "handle": "character.bsky.social", "relationshipStages": rel.DEFAULT_STAGES})
         with server.database() as db:
             self.assertEqual(db.execute("SELECT relationship_stages FROM characters WHERE id=1").fetchone()[0], "")
+
+    def test_context_reset_hides_older_dms_from_the_ai(self):
+        self.start_game()
+        old = [{"id": "old-1", "sender": {"did": DID}, "text": "付き合ってください", "sentAt": "2026-10-20T00:00:00Z"},
+               {"id": "old-2", "sender": {"did": CHAR_DID}, "text": "ごめんなさい、恋人にはなれない", "sentAt": "2026-10-20T00:01:00Z"}]
+        dm = FakeDm(old)
+        prompts = []
+        reply = fake_ai("うん")
+
+        def ai(messages, json_mode=False, temperature=0.75, model=None, timeout=120):
+            prompts.append(messages)
+            return reply(messages, json_mode, temperature)
+
+        def chat(text, key):
+            with patch.object(server, "oauth_call", side_effect=dm), patch.object(server, "call_ai", side_effect=ai):
+                status, _ = invoke("do_POST", "/api/game/chat", {"characterId": 1, "message": text, "clientMessageId": key})
+            self.assertEqual(status, 200)
+            return "\n".join(str(m["content"]) for m in prompts[-1])  # The reply prompt and its conversation.
+        self.assertIn("恋人にはなれない", chat("こんにちは", "before-reset"))
+        status, data = invoke("do_POST", "/api/characters/1/relationship/context", {"did": DID})
+        self.assertEqual(status, 200)
+        self.assertTrue(data["relationships"][0]["contextResetAt"])
+        prompt = chat("はじめまして", "after-reset")
+        self.assertNotIn("恋人にはなれない", prompt)
+        self.assertNotIn("こんにちは", prompt)  # Everything before the reset is hidden, the game's own turns too.
+        self.assertIn("はじめまして", prompt)
+        # A full relationship reset hides the history as well.
+        with server.database() as db:
+            db.execute("DELETE FROM dm_context_resets")
+        invoke("do_POST", "/api/characters/1/relationship/delete", {"did": DID})
+        with server.database() as db:
+            self.assertTrue(server.context_reset_at(db, 1, DID))
 
     def test_evaluation_can_use_a_separate_model(self):
         self.start_game()

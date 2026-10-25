@@ -29,17 +29,31 @@ class ConfessionTest(ServerFixture):
             db.execute("INSERT INTO dm_relationships(character_id,partner_did,partner_handle,affection,trust,romance,updated_at) VALUES(1,?,?,?,?,?,1)", (DID, "player.test", score, score, score))
         return FakeDm()
 
-    def send(self, key="confession-1", confession=True):
-        return invoke("do_POST", "/api/game/chat", {"characterId":1,"message":"I love you", "clientMessageId":key,"confession":confession})
+    def send(self, key="confession-1", message="I love you"):
+        return invoke("do_POST", "/api/game/chat", {"characterId":1,"message":message, "clientMessageId":key})
 
     def no_change(self):
         return patch.object(server, "evaluate_message", return_value=server.relationship.no_change("test"))
 
-    def test_rejects_ineligible_confession_before_sending(self):
-        self.start(74)  # Below the last stage (75).
-        with patch.object(server,"oauth_call") as oauth:
-            self.assertEqual(self.send()[0],400)
-        oauth.assert_not_called()
+    def test_confession_is_not_judged_below_the_last_stage(self):
+        dm=self.start(74)  # Below the last stage (75).
+        calls=[]
+        with patch.object(server,"oauth_call",side_effect=dm),self.no_change(),patch.object(server,"call_ai",side_effect=judge(ACCEPT, calls)):
+            status,result=self.send()
+        self.assertEqual(status,200)
+        self.assertEqual(calls,[])
+        self.assertEqual(result["game"]["romance"]["status"],"normal")
+
+    def test_confession_is_read_from_context_without_any_flag(self):
+        dm=self.start()
+        calls=[]
+        not_a_confession={"clear": False, "accept": False, "reason": "test"}
+        with patch.object(server,"oauth_call",side_effect=dm),self.no_change(),patch.object(server,"call_ai",side_effect=judge(not_a_confession, calls)):
+            status,result=self.send("small-talk","今日は暑いね")
+        self.assertEqual(status,200)
+        self.assertEqual(len(calls),1)  # Every message at the last stage is judged.
+        self.assertEqual(result["relationshipUpdate"]["confession"],"unclear")
+        self.assertEqual(result["game"]["romance"]["status"],"ready")
 
     def test_accepts_once_persists_and_continues_as_lovers(self):
         dm=self.start()
@@ -60,9 +74,9 @@ class ConfessionTest(ServerFixture):
                 self.assertEqual(status,200)
                 self.assertEqual(result["game"]["relationship"],"恋人")
                 self.assertIsNone(result["game"]["ending"])
-        with patch.object(server,"oauth_call") as oauth:
-            self.assertEqual(self.send("second-confession")[0],400)
-        oauth.assert_not_called()
+        with patch.object(server,"oauth_call",side_effect=dm),patch.object(server,"call_ai",side_effect=judge(REJECT, calls)):
+            self.assertEqual(self.send("second-confession")[1]["game"]["romance"]["status"],"lovers")
+        self.assertEqual(len(calls),1)  # Lovers are never judged again.
 
     def test_declined_confession_lowers_the_relationship(self):
         dm=self.start()
@@ -87,12 +101,6 @@ class ConfessionTest(ServerFixture):
             self.assertEqual(self.send()[1]["game"]["romance"]["status"],"lovers")
         self.assertEqual(len(dm.sent),2)
         self.assertEqual(len(calls),2)
-
-    def test_confession_flag_cannot_change_during_retry(self):
-        dm=self.start()
-        with patch.object(server,"oauth_call",side_effect=dm),patch.object(server,"call_ai",side_effect=fake_ai()):
-            self.assertEqual(self.send(confession=False)[0],200)
-        self.assertEqual(self.send(confession=True)[0],400)
 
     def test_invalid_decision_never_implies_acceptance(self):
         for index, value in enumerate(['{"clear":true}', '{"clear":"yes","accept":true}', 'null', 'not json']):

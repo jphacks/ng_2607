@@ -107,7 +107,9 @@ class Preview:
             game = self.game(cid)
             before = game['affinity']
             lovers = game['previewRomance']['status'] == 'lovers'
-            confessing = bool(body.get('confession')) and before == 100 and not lovers
+            # Stand-in for the confession judge: a message that asks to go out counts as a confession.
+            text = str(body.get('message', ''))
+            confessing = any(word in text for word in ('付き合', '恋人に')) and before == 100 and not lovers
             accepted = confessing and self.accept_confession
             lovers = lovers or accepted
             score = 100 if lovers or confessing else max(0, min(100, before + self.delta))
