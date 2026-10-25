@@ -235,7 +235,9 @@ class ServerTest(ServerFixture):
         self.assertEqual(first["game"]["turns"], 0)
         self.assertEqual(second["game"]["turns"], 1)
 
-        status, _ = invoke("do_POST", "/api/characters/delete", {"id": second_id})
+        with patch.object(server, "oauth_call", return_value={"ok": True}) as oauth:
+            status, _ = invoke("do_POST", "/api/characters/delete", {"id": second_id})
+        oauth.assert_called_once_with({"op": "forget", "did": CHAR_DID})
         self.assertEqual(status, 200)
         _, deleted_game = invoke("do_GET", f"/api/game?did={DID}&characterId={second_id}")
         self.assertIsNone(deleted_game["game"])

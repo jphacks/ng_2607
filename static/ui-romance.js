@@ -7,7 +7,7 @@
   $('.composer-area').before(card);
   const memory = document.createElement('button');
   memory.type = 'button'; memory.className = 'romance-memory'; memory.textContent = '♡ 大切な思い出を見返す'; memory.hidden = true;
-  $('.profile-content').append(memory);
+  ($('.profile-memory-actions') || $('.profile-content')).append(memory);
   const scene = document.createElement('dialog'); scene.className = 'romance-scene';
   scene.setAttribute('aria-label','恋人になった日の思い出');
   scene.innerHTML = '<img class="romance-art" alt="ふたりの想いが重なった日の思い出"><div class="romance-shade"></div><div class="romance-particles" aria-hidden="true"></div><button type="button" class="romance-skip">演出をスキップ</button><div class="romance-story"><p class="romance-quote">「私も、あなたが好き。これからは、ずっと隣に。」</p><p>これからは恋人としての関係を楽しんでください。</p><button type="button" class="romance-continue">ふたりの時間を続ける <span>→</span></button></div>';
@@ -41,6 +41,12 @@
       memory.hidden=!lovers;
       state.input.placeholder=lovers?'恋人にメッセージを送る…':'Bluesky DMを送る…';
       state.typing.textContent='返信を待っています…';
+      if ($('.profile-memory-empty')) $('.profile-memory-empty').hidden=lovers;
+      state.input.placeholder=controller.confessing?'あなたへの想いを、ここに…':lovers?'恋人にメッセージを送る…':'Bluesky DMを送る…';
+      state.send.setAttribute('aria-label',controller.confessing?'想いを届ける':'メッセージを送信');
+      state.send.classList.toggle('confession-send',controller.confessing);
+      if(controller.confessing) state.typing.textContent='あなたの言葉を、受け止めています…';
+      else state.typing.textContent='返信を待っています…';
       if(lovers) $('.desktop-status').textContent='♡ 恋人';
       else $('.desktop-status').textContent='あなたとお話し中';
       $('.desktop-subtitle').textContent=lovers?'ふたりの時間は、これからも。':'ふたりの言葉を、少しずつ重ねて。';

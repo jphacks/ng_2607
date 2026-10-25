@@ -80,6 +80,7 @@ function select(id) {
   state.selectedId = id;
   $('editor-mode').textContent = `CHARACTER / ${id}`; $('editor-title').textContent = `${character.name}を編集`;
   $('character-profile-input').value = character.profile;
+  for (const key of ['intro','personality','likes','basics','details','memories']) $('public-'+key).value = character.publicProfile?.[key] || '';
   $('character-handle-input').value = character.handle;
   $('relationship-weights').value = character.relationshipWeights || '';
   fillStages(character.relationshipStages); renderBaseImage(id);
@@ -416,7 +417,7 @@ $('manual-post').addEventListener('input', () => { $('manual-length').textConten
 
 $('new-character').addEventListener('click', newCharacter);
 async function saveCharacter() {
-  const data = await post('/api/characters/save', { id: state.selectedId, profile: $('character-profile-input').value, handle: $('character-handle-input').value, relationshipWeights: $('relationship-weights').value, relationshipStages: readStages(), secrets: readSecrets() });
+  const data = await post('/api/characters/save', { id: state.selectedId, profile: $('character-profile-input').value, handle: $('character-handle-input').value, relationshipWeights: $('relationship-weights').value, relationshipStages: readStages(), secrets: readSecrets(), publicProfile: Object.fromEntries(['intro','personality','likes','basics','details','memories'].map(key => [key, $('public-'+key).value])) });
   const index = state.characters.findIndex(item => item.id === data.character.id);
   if (index >= 0) state.characters[index] = data.character; else state.characters.push(data.character);
   select(data.character.id);

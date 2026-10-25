@@ -15,7 +15,7 @@ const fetch = async (url, init = {}) => {
   calls.push([url, init.method]);
   if (url === '/api/auth') return response({did});
   if (url.startsWith('/api/profile')) return response({profile: {handle: 'player.bsky.social', displayName: 'プレイヤー', description: '読書が好き'}});
-  if (url === '/api/characters') return response({characters: [
+  if (url === '/api/characters?view=player') return response({characters: [
     {id: 7, name: '灯', profile: '星を見るのが好き。', handle: 'akari.bsky.social',
      iconUrl: 'https://cdn.bsky.app/avatar.png', oauthConnected: true},
     {id: 8, name: '凪', profile: 'まだ解放前。', handle: 'nagi.bsky.social', iconUrl: null, oauthConnected: true,

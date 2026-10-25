@@ -5,3 +5,6 @@ __pycache__/
 node_modules/
 
 .env
+
+# Machine-local startup helpers
+/.local/

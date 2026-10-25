@@ -17,6 +17,8 @@ class SharedSettingsTest(unittest.TestCase):
         self.folder = tempfile.TemporaryDirectory()
 
     def tearDown(self):
+        # Close SQLite connections before deleting the directory on Windows.
+        self.doCleanups()
         self.folder.cleanup()
 
     def pc(self, name):

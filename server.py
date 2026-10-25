@@ -28,6 +28,7 @@ from pathlib import Path
 
 import automation
 import relationship
+import public_profiles
 
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
@@ -97,6 +98,7 @@ DID_RE = re.compile(r"^did:(plc:[a-z2-7]+|web:[A-Za-z0-9._:%-]+)$")
 SECRET_LEVELS = (25, 50, 75, 100)
 # Columns added after the first release, applied to existing databases in this order.
 MIGRATED_COLUMNS = (
+    ("characters", "public_profile", "TEXT NOT NULL DEFAULT ''"),
     ("dm_relationships", "is_lovers", "INTEGER NOT NULL DEFAULT 0"),  # Superseded by lover_at; migrated in init_db.
     ("dm_turns", "confession", "INTEGER NOT NULL DEFAULT 0"),
     ("characters", "at_did", "TEXT NOT NULL DEFAULT ''"),
@@ -1118,6 +1120,7 @@ def send_game_chat(visitor, selected, did, message, client_message_id):
 def character_json(row):
     return {
         "id": row["id"], "name": row["name"], "profile": row["profile"],
+        "publicProfile": public_profiles.read(row["public_profile"], row["profile"]),
         "handle": row["handle"], "atDid": row["at_did"], "relationshipWeights": row["relationship_weights"],
         "relationshipStages": relationship.parse_stages(row["relationship_stages"] if "relationship_stages" in row.keys() else ""),
         "oauthConnected": bool(row["oauth_did"] and row["oauth_did"] == row["at_did"]),
@@ -1308,6 +1311,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     rows = db.execute("SELECT * FROM characters ORDER BY id").fetchall()
                     characters = [{**character_json(row), "unlock": unlock_status(db, row["id"], player["did"]) if player else None}
                                   for row in rows]
+                if query.get("view", [""])[0] == "player":
+                    for character in characters:
+                        character["profile"] = character["publicProfile"]["intro"]
+                        character.pop("relationshipWeights", None)
+                        character.pop("relationshipStages", None)
+                    return self.send_json(200, {"characters": characters}, cookie)
                 return self.send_json(200, {"characters": characters, "defaultStages": relationship.DEFAULT_STAGES,
                                             "stageMinimums": relationship.STAGE_MINIMUMS}, cookie)
             secrets_match = re.fullmatch(r"/api/characters/(\d+)/secrets", parsed.path)
@@ -1669,6 +1678,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                                    if body.get("relationshipStages") is not None else "")
                 # Unchanged defaults are stored empty, so improvements to the defaults reach every character.
                 stages_text = "" if stages == relationship.DEFAULT_STAGES else json.dumps(stages, ensure_ascii=False)
+                public_input = body.get("publicProfile")
+                public_text = json.dumps(public_profiles.normalize(public_input), ensure_ascii=False) if public_input is not None else None
                 secret_input = body.get("secrets")
                 if secret_input is not None:
                     if not isinstance(secret_input, list) or len(secret_input) > len(SECRET_LEVELS):
@@ -1708,6 +1719,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         previous_oauth_did = existing["oauth_did"]
                         db.execute("UPDATE characters SET name=?,profile=?,handle=?,at_did=?,avatar_url=?,relationship_weights=?,relationship_stages=?,oauth_did=CASE WHEN at_did=? THEN oauth_did ELSE '' END,oauth_owner=CASE WHEN at_did=? THEN oauth_owner ELSE '' END,updated_at=? WHERE id=?",
                                    (name, profile, handle, at_did, avatar_url, weights_text, stages_text, at_did, at_did, int(time.time()), selected))
+                    if public_text is not None:
+                        db.execute("UPDATE characters SET public_profile=? WHERE id=?", (public_text, selected))
                     if secret_input is not None:
                         for level, title, content in secret_input:
                             if content:

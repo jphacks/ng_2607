@@ -14,8 +14,9 @@
     name: character.name,
     handle: character.handle ? '@' + character.handle : '',
     did: character.atDid || '',
-    summary: short(character.profile.trim().replace(/\s+/g, ' '), 80),
-    bio: character.profile,
+    summary: short((character.publicProfile?.intro || '紹介は準備中です。').trim().replace(/\s+/g, ' '), 80),
+    bio: character.publicProfile?.intro || '紹介は準備中です。',
+    publicProfile: character.publicProfile || {},
     images: {normal: safeImage(character.iconUrl)},
     oauthConnected: character.oauthConnected,
     // Opened by getting close through Bluesky DMs; null means no lock information (treated as open).
@@ -100,7 +101,7 @@
         identity = null;
       },
       async list(signal) {
-        const {characters: list} = await request('/api/characters', {signal, timeout: 15000});
+        const {characters: list} = await request('/api/characters?view=player', {signal, timeout: 15000});
         if (!Array.isArray(list)) throw new Error('キャラクター一覧を読み込めませんでした。');
         characters = list;
         return list.map(asPartner);

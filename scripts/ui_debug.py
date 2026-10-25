@@ -39,7 +39,7 @@ class Preview:
         return dict(id=cid, name=name, handle=f'preview{cid}.example.test',
                     atDid=f'did:plc:ui-preview-{cid}', iconUrl='/' + image,
                     profile=f'{name}です。散歩と映画、ゆっくりお話しする時間が好きです。\n最近は小さなカフェを探しています。',
-                    oauthConnected=True, relationshipWeights='', secrets=[
+                    oauthConnected=True, relationshipWeights='', publicProfile=dict(intro='散歩と映画、ゆっくりお話しする時間が好きです。', personality='穏やかで好奇心旺盛', likes='映画、カフェ、散歩', basics='好きな時間：夕暮れ', details='休日は小さなカフェを探して歩いています。'), secrets=[
                         dict(level=level, title=title, content='実は、あなたと話せる時間をいつも楽しみにしているんです。\nこれはUI確認用のサンプルです。')
                         for level, title in zip((25, 50, 75, 100), ('お気に入りの場所', '小さな夢', '大切な思い出', 'あなたへの気持ち'))])
 
@@ -139,7 +139,7 @@ class Preview:
             if selected is None:
                 selected = self.character(max((c['id'] for c in self.characters), default=0)+1, '新しい相手', 'avatar-placeholder.svg')
                 self.characters.append(selected)
-            for key in ('profile', 'handle', 'relationshipWeights', 'secrets'):
+            for key in ('profile', 'handle', 'relationshipWeights', 'secrets', 'publicProfile'):
                 if key in body: selected[key] = body[key]
             return {'character': self.public_character(selected)}
         if path in ('/api/characters/delete', '/api/characters/disconnect'):

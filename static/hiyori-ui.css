@@ -86,8 +86,6 @@
 .bio-section{margin-top:24px}
 .bio-section h3,.ui-page .secret-section h3{font-size:14px;font-weight:500;margin:0 0 8px}
 .ui-page .profile-bio{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
-.ui-page .profile-bio.clamped{display:-webkit-box;-webkit-line-clamp:8;-webkit-box-orient:vertical;overflow:hidden}
-.bio-toggle{margin-top:8px;border:0;background:none;padding:4px 0;color:#a24869;font:inherit;font-size:11px;cursor:pointer}
 .ui-page .secret-card p{white-space:pre-wrap}
 
 /* Secret popup */
@@ -126,25 +124,6 @@
   @keyframes ui-popup{from{opacity:0;transform:translateY(16px) scale(.94)}to{opacity:1;transform:translateY(0) scale(1)}}
 }
 .ui-page .mobile-secret-badge{right:12px;bottom:4px}
-
-/* Three relationship axes under the overall meter */
-.relationship-axes{display:grid;gap:6px;margin-top:12px;padding-top:10px;border-top:1px solid #f1e3e7}
-.relationship-axes .axis{display:grid;grid-template-columns:4.5em minmax(0,1fr) 2em;align-items:center;gap:8px;font-size:10px;color:var(--muted)}
-.relationship-axes .axis b{font-weight:500;color:#a57b87;text-align:right;font-size:11px}
-.relationship-axes progress{appearance:none;border:0;width:100%;height:3px;border-radius:3px;overflow:hidden;display:block;margin:0}
-.relationship-axes progress::-webkit-progress-bar{background:#f0e7e9}
-.relationship-axes [data-axis="affection"] progress::-webkit-progress-value{background:#e0a2b3}
-.relationship-axes [data-axis="trust"] progress::-webkit-progress-value{background:#8fb3a3}
-.relationship-axes [data-axis="romance"] progress::-webkit-progress-value{background:#c97a95}
-.relationship-axes [data-axis="affection"] progress::-moz-progress-bar{background:#e0a2b3}
-.relationship-axes [data-axis="trust"] progress::-moz-progress-bar{background:#8fb3a3}
-.relationship-axes [data-axis="romance"] progress::-moz-progress-bar{background:#c97a95}
-.relationship-axes .axis-change{font-size:10px;color:#a57988;margin:4px 0 0;line-height:1.6}
-.axis-detail{margin-top:10px;font-size:11px;color:var(--muted)}
-.axis-detail summary{cursor:pointer;color:#a57b87}
-.axis-detail p{margin:8px 0 4px;line-height:1.7;color:var(--text)}
-.axis-detail ul{margin:0;padding-left:1.2em;line-height:1.7}
-.axis-detail q{display:block;color:#9a8f93;font-size:10px}
 
 /* Characters not opened yet through Bluesky DMs */
 .ui-page .partner-card.locked{cursor:not-allowed;background:#faf7f6;align-items:flex-start}
