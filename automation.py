@@ -23,6 +23,7 @@ import re
 import sys
 import threading
 import time
+import unicodedata
 
 import relationship
 
@@ -47,10 +48,15 @@ HISTORY_LIMIT = 20
 SCHEDULE_LOCK = threading.RLock()
 DEFAULT_UNLOCK_SCORE = 40  # Overall affinity through Bluesky DMs that opens the ReAl game.
 SETTING_KEYS = ("auto_reply", "auto_post", "post_prompt", "extra_persona", "schedule_base", "require_unlock", "unlock_score",
-                "post_times", "auto_story", "story_times", "story_image_prompt", "auto_reach_out")
+                "post_times", "auto_story", "story_times", "story_image_prompt", "auto_reach_out",
+                "reach_out_mode", "reach_out_hashtag", "reach_out_cooldown_enabled", "reach_out_wait_for_reply")
+DEFAULT_REACH_OUT_MODE = "close"
+REACH_OUT_MODES = ("close", "hashtag")
+DEFAULT_REACH_OUT_HASHTAG = "結城めもり"
+HASHTAG_LIMIT = 64
 # Reaching out first: to people at the なかよし stage or closer, about one of their recent posts.
 REACH_OUT_STAGE = 2  # Stage index of なかよし (overall 50+); lovers too.
-REACH_OUT_INTERVAL = 24 * 3600  # At most one message per person per day.
+REACH_OUT_INTERVAL = 24 * 3600  # Per-person limit when the admin enables the cooldown.
 REACH_OUT_POST_AGE = 3 * 24 * 3600  # Only posts from the last three days make a natural topic.
 STORY_IMAGE_PROMPT_LIMIT = 6000
 SITUATION_HEADING = "【今回のシチュエーション】"
@@ -195,6 +201,43 @@ def parse_times(text, label):
 
 def day_label(day):
     return f"{day.month}月{day.day}日({WEEKDAYS[day.weekday()]})"
+
+
+def parse_reach_out_hashtag(value):
+    """One tag, optionally prefixed with #; stored without the prefix."""
+    if not isinstance(value, str):
+        raise ValueError("話しかけるハッシュタグは文字列で入力してください")
+    tag = unicodedata.normalize("NFKC", value).strip().removeprefix("#")
+    if not tag or len(tag) > HASHTAG_LIMIT or any(
+        char == "#" or char.isspace() or unicodedata.category(char).startswith("C") for char in tag
+    ):
+        raise ValueError(f"話しかけるハッシュタグは空白・途中の # を含まない1〜{HASHTAG_LIMIT}文字で入力してください")
+    return tag
+
+
+def post_hashtag_matches(post, hashtag):
+    """Prefer Bluesky's tag metadata; match complete tags, never a text substring."""
+    wanted = unicodedata.normalize("NFKC", hashtag).casefold()
+    for tag in post.get("tags") or []:
+        if isinstance(tag, str) and unicodedata.normalize("NFKC", tag).casefold() == wanted:
+            return True
+    for facet in post.get("facets") or []:
+        if not isinstance(facet, dict):
+            continue
+        for feature in facet.get("features") or []:
+            if isinstance(feature, dict) and feature.get("$type") == "app.bsky.richtext.facet#tag":
+                tag = feature.get("tag")
+                if isinstance(tag, str) and unicodedata.normalize("NFKC", tag).casefold() == wanted:
+                    return True
+    # Records without rich-text facets can still contain a written hashtag.
+    text = unicodedata.normalize("NFKC", post.get("text", ""))
+    for match in re.finditer(r"(?:^|\s)#([^\s]+)", text):
+        tag = match[1]
+        while tag and unicodedata.category(tag[-1]).startswith("P"):
+            tag = tag[:-1]
+        if tag.casefold() == wanted:
+            return True
+    return False
 
 
 def strip_echo(text):
@@ -533,7 +576,8 @@ class Runner:
         with self.env.DB_LOCK, self.env.database() as db:
             rows = db.execute("""SELECT c.id,c.name,c.profile,c.oauth_did,c.relationship_weights,c.relationship_stages,a.auto_reply,a.auto_post,
                                         a.post_prompt,a.extra_persona,a.schedule_base,a.recent_posts,a.require_unlock,a.unlock_score,
-                                        a.post_times,a.auto_story,a.story_times,a.story_image_prompt,a.auto_reach_out
+                                        a.post_times,a.auto_story,a.story_times,a.story_image_prompt,a.auto_reach_out,
+                                        a.reach_out_mode,a.reach_out_hashtag,a.reach_out_cooldown_enabled,a.reach_out_wait_for_reply
                                  FROM characters c JOIN character_automation a ON a.character_id=c.id
                                  WHERE (a.auto_reply=1 OR a.auto_post=1 OR a.auto_story=1 OR a.auto_reach_out=1) AND c.oauth_did!='' AND c.oauth_did=c.at_did""").fetchall()
             result = []
@@ -672,22 +716,53 @@ class Runner:
                      lambda data, t: self.create_story(target, self.make_story(target, now), t))
 
     def reach_out(self, target, data=None, now=None, partner_did=None):
-        """Message one close person about their recent post. Returns the log record, or None when nobody fits.
-        partner_did: send to this person now (admin test), skipping the once-a-day limit."""
+        """Message one person about a recent post matching the saved conditions.
+        partner_did: admin test; skips the daily/last-sender guards, but keeps the saved audience and tag filter."""
         now = now or dt.datetime.now()
         data = data or self.day(target, now.date())
+        mode = target.get("reach_out_mode", DEFAULT_REACH_OUT_MODE)
+        conversations = {}
+        if mode == "hashtag":
+            cursor, seen = "", set()
+            while True:
+                page = self.env.oauth_call({"op": "convos", "did": target["did"], "cursor": cursor})
+                for convo in page.get("convos", []):
+                    members = convo.get("members") or []
+                    others = [member for member in members if member.get("did") != target["did"]]
+                    if (len(members) != 2 or len(others) != 1 or not others[0].get("did")
+                            or not any(member.get("did") == target["did"] for member in members)
+                            or convo.get("status") != "accepted" or convo.get("muted")
+                            or not convo.get("lastMessage") or not convo.get("id")):
+                        continue
+                    if partner_did and others[0]["did"] != partner_did:
+                        continue
+                    conversations[others[0]["did"]] = (convo, others[0])
+                cursor = page.get("cursor")
+                if not cursor or cursor in seen:
+                    break
+                seen.add(cursor)
         with self.env.DB_LOCK, self.env.database() as db:
-            candidates = self.env.reach_out_candidates(db, target["id"], partner_did)
+            candidates = self.env.reach_out_candidates(
+                db, target["id"], partner_did, mode=mode,
+                partners=[member for _, member in conversations.values()] if mode == "hashtag" else None)
         for partner in candidates:
-            if partner_did is None and time.time() - partner["lastReachOut"] < REACH_OUT_INTERVAL:
+            if (partner_did is None and target.get("reach_out_cooldown_enabled", True)
+                    and time.time() - partner["lastReachOut"] < REACH_OUT_INTERVAL):
                 continue
             cutoff = time.time() - REACH_OUT_POST_AGE
-            posts = [post for post in self.env.character_posts(partner["did"])
-                     if post["uri"] not in partner["usedPosts"] and post["text"].strip() and post.get("createdAt", 0) >= cutoff]
+            feed = (self.env.character_posts(partner["did"], all_recent=True) if mode == "hashtag"
+                    else self.env.character_posts(partner["did"]))
+            posts = [post for post in feed
+                     if post["uri"] not in partner["usedPosts"] and post["text"].strip() and post.get("createdAt", 0) >= cutoff
+                     and (mode != "hashtag" or post_hashtag_matches(
+                         post, target.get("reach_out_hashtag", DEFAULT_REACH_OUT_HASHTAG)))]
             if not posts:
                 continue
             post = max(posts, key=lambda item: item["createdAt"])
-            convo = self.env.oauth_call({"op": "convoWithMember", "did": target["did"], "memberDid": partner["did"]}).get("convo") or {}
+            if mode == "hashtag":
+                convo = conversations[partner["did"]][0]
+            else:
+                convo = self.env.oauth_call({"op": "convoWithMember", "did": target["did"], "memberDid": partner["did"]}).get("convo") or {}
             if not convo.get("id"):
                 continue
             page = self.env.oauth_call({"op": "messages", "did": target["did"], "convoId": convo["id"], "cursor": ""})
@@ -698,7 +773,9 @@ class Runner:
             items = [item for item in self.env.after_reset(page.get("messages", [])[:HISTORY_LIMIT], reset_at)
                      if isinstance(item.get("text"), str) and item["text"]]
             history = [(item.get("sender", {}).get("did") == target["did"], item["text"]) for item in items][::-1]
-            if history and history[-1][0] and partner_did is None:
+            if mode == "hashtag" and not history:
+                continue
+            if history and history[-1][0] and partner_did is None and target.get("reach_out_wait_for_reply", True):
                 continue  # Still waiting for an answer to the character's last message: no double texting.
             name = partner["handle"] or "相手"
             notes = relationship.reply_guidance(partner["scores"], target.get("stages"), partner["lover"])
@@ -862,4 +939,8 @@ def settings_from_row(row):
         "story_times": parse_times(row["story_times"] if "story_times" in keys else DEFAULT_STORY_TIMES, "ストーリーの時刻"),
         "story_image_prompt": (row["story_image_prompt"] or "") if "story_image_prompt" in keys else "",
         "auto_reach_out": bool(row["auto_reach_out"]) if "auto_reach_out" in keys else False,
+        "reach_out_mode": row["reach_out_mode"] if "reach_out_mode" in keys else DEFAULT_REACH_OUT_MODE,
+        "reach_out_hashtag": row["reach_out_hashtag"] if "reach_out_hashtag" in keys else DEFAULT_REACH_OUT_HASHTAG,
+        "reach_out_cooldown_enabled": bool(row["reach_out_cooldown_enabled"]) if "reach_out_cooldown_enabled" in keys else True,
+        "reach_out_wait_for_reply": bool(row["reach_out_wait_for_reply"]) if "reach_out_wait_for_reply" in keys else True,
     }

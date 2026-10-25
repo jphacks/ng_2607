@@ -162,7 +162,11 @@ class Preview:
                 self.game(cid)
                 return dict(messages=self.messages[cid], cursor=None)
             if kind == 'automation':
-                settings = self.settings.setdefault(cid, dict(auto_reply=False, auto_post=False, extra_persona='', post_prompt='', schedule_base='{}', require_unlock=False, unlock_score=30))
+                settings = self.settings.setdefault(cid, dict(auto_reply=False, auto_post=False, extra_persona='', post_prompt='',
+                    schedule_base='{}', require_unlock=False, unlock_score=30, post_times=['12:00'], auto_story=False,
+                    story_times=['20:00'], story_image_prompt='', auto_reach_out=False,
+                    reach_out_mode='close', reach_out_hashtag='結城めもり',
+                    reach_out_cooldown_enabled=True, reach_out_wait_for_reply=True))
                 if len(parts) == 4 and method == 'POST': settings.update(body)
                 today = dict(blocks=[dict(start='09:00', end='18:00', status='free', activity='休日', detail='のんびり過ごす')], post_times=['12:00'], events=[], post_log=[], dm_log=[])
                 if parts[-1] == 'preview': return {'text': '窓の外の空がきれい。今日はいいことがありそう。'}
