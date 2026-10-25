@@ -129,6 +129,101 @@ class AutomationTest(unittest.TestCase):
         self.assertEqual(automation.missing_scopes(granted), {"reply": [], "post": [], "story": ["blob:image/*"]})
         self.assertEqual(automation.missing_scopes("atproto")["post"], ["repo:app.bsky.feed.post?action=create"])
 
+    def test_reach_out_conditions_are_saved_normalized_and_owner_only(self):
+        defaults = automation.settings_from_row(None)
+        self.assertEqual(defaults["reach_out_mode"], "close")
+        self.assertEqual(defaults["reach_out_hashtag"], "結城めもり")
+        settings = dict(auto_reach_out=True, reach_out_mode="hashtag", reach_out_hashtag=" ＃結城めもり ")
+        status, _ = invoke("do_POST", "/api/characters/1/automation", settings, visitor=OTHER_VISITOR)
+        self.assertEqual(status, 401)
+        status, data = self.save(**settings)
+        self.assertEqual(status, 200)
+        self.assertEqual(data["settings"]["reach_out_mode"], "hashtag")
+        self.assertEqual(data["settings"]["reach_out_hashtag"], "結城めもり")
+        with patch.object(server, "oauth_call", side_effect=self.bsky):
+            status, data = invoke("do_GET", "/api/characters/1/automation")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["settings"]["reach_out_hashtag"], "結城めもり")
+        target = server.RUNNER.targets()[0]
+        self.assertEqual(target["reach_out_mode"], "hashtag")
+        self.assertEqual(target["reach_out_hashtag"], "結城めもり")
+
+    def test_reach_out_conditions_reject_invalid_values_without_overwriting(self):
+        status, _ = self.save(auto_reach_out=True, reach_out_mode="hashtag", reach_out_hashtag="#結城めもり")
+        self.assertEqual(status, 200)
+        invalid = [dict(reach_out_mode="everyone", reach_out_hashtag="結城めもり")]
+        invalid.extend(dict(reach_out_mode="hashtag", reach_out_hashtag=value)
+                       for value in ("", "#", "two tags", "memori#extra", "a" * 65))
+        for settings in invalid:
+            with self.subTest(settings=settings):
+                status, _ = self.save(**settings)
+                self.assertEqual(status, 400)
+        with server.database() as db:
+            target = server.automation_target(db, 1, VISITOR)
+        self.assertEqual((target["reach_out_mode"], target["reach_out_hashtag"]), ("hashtag", "結城めもり"))
+
+    def test_close_reach_out_accepts_empty_disabled_hashtag_and_keeps_saved_tag(self):
+        status, data = self.save(reach_out_mode="close", reach_out_hashtag="")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["settings"]["reach_out_hashtag"], "結城めもり")
+        status, _ = self.save(reach_out_mode="hashtag", reach_out_hashtag="#めもりとおでかけ")
+        self.assertEqual(status, 200)
+        status, data = self.save(reach_out_mode="close", reach_out_hashtag="")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["settings"]["reach_out_hashtag"], "めもりとおでかけ")
+
+    def test_reach_out_cooldown_setting_round_trips_and_old_clients_preserve_it(self):
+        self.assertTrue(automation.settings_from_row(None)["reach_out_cooldown_enabled"])
+        status, _ = invoke("do_POST", "/api/characters/1/automation",
+                           {"reach_out_cooldown_enabled": False}, visitor=OTHER_VISITOR)
+        self.assertEqual(status, 401)
+        status, data = self.save(auto_reach_out=True, reach_out_cooldown_enabled=False)
+        self.assertEqual(status, 200)
+        self.assertIs(data["settings"]["reach_out_cooldown_enabled"], False)
+        with patch.object(server, "oauth_call", side_effect=self.bsky):
+            status, data = invoke("do_GET", "/api/characters/1/automation")
+        self.assertEqual(status, 200)
+        self.assertIs(data["settings"]["reach_out_cooldown_enabled"], False)
+        self.assertIs(server.RUNNER.targets()[0]["reach_out_cooldown_enabled"], False)
+        status, data = self.save(auto_reach_out=True)  # An older UI omits the new field.
+        self.assertEqual(status, 200)
+        self.assertIs(data["settings"]["reach_out_cooldown_enabled"], False)
+        status, data = self.save(auto_reach_out=True, reach_out_cooldown_enabled=True)
+        self.assertEqual(status, 200)
+        self.assertIs(data["settings"]["reach_out_cooldown_enabled"], True)
+
+    def test_reach_out_cooldown_setting_rejects_non_booleans_without_overwriting(self):
+        status, _ = self.save(reach_out_cooldown_enabled=False)
+        self.assertEqual(status, 200)
+        for value in ("false", 0, None):
+            with self.subTest(value=value):
+                status, _ = self.save(reach_out_cooldown_enabled=value)
+                self.assertEqual(status, 400)
+                with server.database() as db:
+                    target = server.automation_target(db, 1, VISITOR)
+                self.assertIs(target["reach_out_cooldown_enabled"], False)
+
+    def test_reach_out_reply_wait_setting_round_trips_preserves_and_validates(self):
+        self.assertTrue(automation.settings_from_row(None)["reach_out_wait_for_reply"])
+        status, data = self.save(auto_reach_out=True, reach_out_wait_for_reply=False)
+        self.assertEqual(status, 200)
+        self.assertIs(data["settings"]["reach_out_wait_for_reply"], False)
+        with patch.object(server, "oauth_call", side_effect=self.bsky):
+            status, data = invoke("do_GET", "/api/characters/1/automation")
+        self.assertEqual(status, 200)
+        self.assertIs(data["settings"]["reach_out_wait_for_reply"], False)
+        self.assertIs(server.RUNNER.targets()[0]["reach_out_wait_for_reply"], False)
+        status, data = self.save(auto_reach_out=True)
+        self.assertEqual(status, 200)
+        self.assertIs(data["settings"]["reach_out_wait_for_reply"], False)
+        for value in ("false", 0, None):
+            with self.subTest(value=value):
+                status, _ = self.save(reach_out_wait_for_reply=value)
+                self.assertEqual(status, 400)
+                with server.database() as db:
+                    target = server.automation_target(db, 1, VISITOR)
+                self.assertIs(target["reach_out_wait_for_reply"], False)
+
     def test_auto_reply_answers_game_players_but_leaves_real_turns_to_the_game(self):
         self.save()
         real_did = "did:plc:realturn2345"
@@ -242,7 +337,7 @@ class AutomationTest(unittest.TestCase):
         now = time.time()
         feed = [{"uri": f"at://stranger/post/{i}", "date": "x", "text": text, "story": False, "createdAt": now - age}
                 for i, (text, age) in enumerate(posts)]
-        return patch.object(server, "character_posts", side_effect=lambda did: feed if did == STRANGER_DID else [])
+        return patch.object(server, "character_posts", side_effect=lambda did, **kwargs: feed if did == STRANGER_DID else [])
 
     def reach_ai(self, prompts):
         def ai(messages, json_mode=False, temperature=0.75, model=None, timeout=120):
@@ -281,6 +376,239 @@ class AutomationTest(unittest.TestCase):
         self.assertEqual(status, 200)  # The admin test button sends anyway.
         self.assertEqual(len(self.bsky.sent), 1)
         self.assertTrue(data["relationships"][0]["lastReachOutAt"])
+
+    def test_hashtag_reach_out_ignores_affinity_and_selects_exact_tag(self):
+        posts = self.reach_out_setup({"affection": 5, "trust": 0, "romance": 0},
+                                    [("古い写真 #結城めもり", 4 * 24 * 3600),
+                                     ("猫を拾った！ #結城めもり", 3600),
+                                     ("別のタグ #結城めもり推し", 1800),
+                                     ("結城めもりという名前を見た", 1200),
+                                     ("#別のタグ", 60)])
+        self.save(auto_reach_out=True, reach_out_mode="hashtag", reach_out_hashtag="#結城めもり")
+        self.bsky.add_convo("c1", STRANGER_DID, "stranger.test", [(STRANGER_DID, "こんにちは")])
+        prompts = []
+        with posts, patch.object(server, "oauth_call", side_effect=self.bsky), \
+             patch.object(server, "call_ai", side_effect=self.reach_ai(prompts)):
+            with server.database() as db:
+                target = server.automation_target(db, 1, VISITOR)
+            record = server.RUNNER.reach_out(target)
+        self.assertIsNotNone(record)
+        self.assertEqual(record["post"], "at://stranger/post/1")
+        self.assertEqual([item["convoId"] for item in self.bsky.sent], ["c1"])
+        self.assertIn("猫を拾った！ #結城めもり", prompts[0])
+        self.assertNotIn("#結城めもり推し", prompts[0])
+        self.assertNotIn("古い写真", prompts[0])
+
+    def test_hashtag_matches_bluesky_metadata_and_complete_written_tags(self):
+        posts = [
+            {"text": "猫の写真", "tags": ["結城めもり"]},
+            {"text": "猫の写真", "facets": [{"features": [
+                {"$type": "app.bsky.richtext.facet#tag", "tag": "結城めもり"}]}]},
+            {"text": "猫の写真 ＃結城めもり！"},
+            {"text": "#結城めもり"},
+        ]
+        for post in posts:
+            with self.subTest(post=post):
+                self.assertTrue(automation.post_hashtag_matches(post, "結城めもり"))
+        for text in ("結城めもり", "#結城めもり推し", "#別の結城めもり", "#別のタグ"):
+            with self.subTest(text=text):
+                self.assertFalse(automation.post_hashtag_matches({"text": text}, "結城めもり"))
+
+    def test_hashtag_reach_out_includes_previous_dm_partner_without_relationship(self):
+        self.save(auto_reply=False, auto_reach_out=True, reach_out_mode="hashtag", reach_out_hashtag="結城めもり")
+        self.story_day(datetime.datetime.now())
+        self.bsky.add_convo("previous", STRANGER_DID, "stranger.test", [(STRANGER_DID, "こんにちは")])
+        feed = [{"uri": "at://stranger/post/tagged", "date": "today", "text": "猫かわいい #結城めもり",
+                 "createdAt": time.time(), "story": False}]
+        with server.database() as db:
+            self.assertIsNone(db.execute("SELECT 1 FROM dm_relationships WHERE partner_did=?", (STRANGER_DID,)).fetchone())
+        with patch.object(server, "character_posts", return_value=feed), \
+             patch.object(server, "oauth_call", side_effect=self.bsky), \
+             patch.object(server, "call_ai", side_effect=self.reach_ai([])):
+            server.RUNNER.tick()
+        self.assertEqual([item["convoId"] for item in self.bsky.sent], ["previous"])
+
+    def test_hashtag_reach_out_does_not_message_unknown_or_empty_conversations(self):
+        self.save(auto_reply=False, auto_reach_out=True, reach_out_mode="hashtag", reach_out_hashtag="結城めもり")
+        self.story_day(datetime.datetime.now())
+        self.bsky.add_convo("empty", STRANGER_DID, "stranger.test", [])
+        feed = [{"uri": "at://stranger/post/tagged", "date": "today", "text": "#結城めもり",
+                 "createdAt": time.time(), "story": False}]
+        with patch.object(server, "character_posts", return_value=feed), \
+             patch.object(server, "oauth_call", side_effect=self.bsky) as oauth, \
+             patch.object(server, "call_ai", side_effect=self.reach_ai([])) as ai:
+            with server.database() as db:
+                target = server.automation_target(db, 1, VISITOR)
+            self.assertIsNone(server.RUNNER.reach_out(target))
+            self.assertIsNone(server.RUNNER.reach_out(target, partner_did=PLAYER_DID))
+        self.assertEqual(self.bsky.sent, [])
+        self.assertEqual(len(self.bsky.convos), 1)
+        self.assertFalse(any(call.args[0]["op"] == "convoWithMember" for call in oauth.call_args_list))
+        ai.assert_not_called()
+
+    def test_hashtag_reach_out_checks_later_conversation_pages(self):
+        self.save(auto_reply=False, auto_reach_out=True, reach_out_mode="hashtag", reach_out_hashtag="結城めもり")
+        self.story_day(datetime.datetime.now())
+        self.bsky.add_convo("second-page", STRANGER_DID, "stranger.test", [(STRANGER_DID, "こんにちは")])
+        cursors = []
+
+        def paginated(command):
+            if command["op"] == "convos":
+                cursors.append(command.get("cursor", ""))
+                return {"convos": self.bsky.convos if command.get("cursor") else [],
+                        "cursor": None if command.get("cursor") else "next"}
+            return self.bsky(command)
+
+        feed = [{"uri": "at://stranger/post/tagged", "date": "today", "text": "#結城めもり",
+                 "createdAt": time.time(), "story": False}]
+        with patch.object(server, "character_posts", return_value=feed), \
+             patch.object(server, "oauth_call", side_effect=paginated), \
+             patch.object(server, "call_ai", side_effect=self.reach_ai([])):
+            with server.database() as db:
+                target = server.automation_target(db, 1, VISITOR)
+            record = server.RUNNER.reach_out(target)
+        self.assertIsNotNone(record)
+        self.assertEqual(cursors, ["", "next"])
+        self.assertEqual([item["convoId"] for item in self.bsky.sent], ["second-page"])
+
+    def test_hashtag_reach_out_skips_muted_pending_and_group_conversations(self):
+        self.save(auto_reply=False, auto_reach_out=True, reach_out_mode="hashtag", reach_out_hashtag="結城めもり")
+        self.story_day(datetime.datetime.now())
+        for convo_id, did in (("muted", STRANGER_DID), ("pending", PLAYER_DID), ("group", "did:plc:group2345")):
+            self.bsky.add_convo(convo_id, did, convo_id + ".test", [(did, "こんにちは")])
+        self.bsky.convos[0]["muted"] = True
+        self.bsky.convos[1]["status"] = "request"
+        self.bsky.convos[2]["members"].append({"did": "did:plc:another2345"})
+        feed = [{"uri": "at://stranger/post/tagged", "date": "today", "text": "#結城めもり",
+                 "createdAt": time.time(), "story": False}]
+        with patch.object(server, "character_posts", return_value=feed), \
+             patch.object(server, "oauth_call", side_effect=self.bsky), \
+             patch.object(server, "call_ai", side_effect=self.reach_ai([])) as ai:
+            with server.database() as db:
+                target = server.automation_target(db, 1, VISITOR)
+            self.assertIsNone(server.RUNNER.reach_out(target))
+        self.assertEqual(self.bsky.sent, [])
+        ai.assert_not_called()
+
+    def test_hashtag_reach_out_keeps_cooldown_duplicate_and_reply_wait_guards(self):
+        posts = self.reach_out_setup({"affection": 5, "trust": 0, "romance": 0}, [("猫 #結城めもり", 60)])
+        self.save(auto_reply=False, auto_reach_out=True, reach_out_mode="hashtag", reach_out_hashtag="結城めもり")
+        self.bsky.add_convo("c1", STRANGER_DID, "stranger.test", [(STRANGER_DID, "こんにちは")])
+        with posts, patch.object(server, "oauth_call", side_effect=self.bsky), \
+             patch.object(server, "call_ai", side_effect=self.reach_ai([])):
+            with server.database() as db:
+                target = server.automation_target(db, 1, VISITOR)
+            self.assertIsNotNone(server.RUNNER.reach_out(target))
+            self.assertIsNone(server.RUNNER.reach_out(target))  # Same person within 24 hours.
+            with server.database() as db:
+                db.execute("UPDATE dm_reach_outs SET sent_at=?", (time.time() - 25 * 3600,))
+            self.assertIsNone(server.RUNNER.reach_out(target))  # Same post even after the cooldown.
+            with server.database() as db:
+                db.execute("DELETE FROM dm_reach_outs")
+            self.bsky.add_convo("c1", STRANGER_DID, "stranger.test",
+                                [(STRANGER_DID, "こんにちは"), (CHAR_DID, "またね")])
+            self.assertIsNone(server.RUNNER.reach_out(target))  # Waiting for the partner's answer.
+        self.assertEqual(len(self.bsky.sent), 1)
+
+    def test_hashtag_reach_out_does_not_run_while_busy(self):
+        self.save(auto_reply=False, auto_reach_out=True, reach_out_mode="hashtag", reach_out_hashtag="結城めもり")
+        self.story_day(datetime.datetime.now())
+        today = server.RUNNER.load_day(1, datetime.date.today())
+        today["blocks"][0]["status"] = "busy"
+        server.RUNNER.save_day(1, today)
+        self.bsky.add_convo("c1", STRANGER_DID, "stranger.test", [(STRANGER_DID, "こんにちは")])
+        with patch.object(server, "oauth_call", side_effect=self.bsky), \
+             patch.object(server.RUNNER, "reach_out") as reach:
+            server.RUNNER.tick()
+        reach.assert_not_called()
+
+    def test_disabling_cooldown_allows_another_post_today_but_never_repeats_a_post(self):
+        self.save(auto_reply=False, auto_reach_out=True, reach_out_mode="hashtag",
+                  reach_out_hashtag="結城めもり", reach_out_cooldown_enabled=False)
+        self.story_day(datetime.datetime.now())
+        self.bsky.add_convo("c1", STRANGER_DID, "stranger.test", [(STRANGER_DID, "こんにちは")])
+        feed = [{"uri": "at://stranger/post/one", "date": "today", "text": "猫 #結城めもり",
+                 "createdAt": time.time() - 60}]
+        with patch.object(server, "character_posts", return_value=feed), \
+             patch.object(server, "oauth_call", side_effect=self.bsky), \
+             patch.object(server, "call_ai", side_effect=self.reach_ai([])):
+            with server.database() as db:
+                target = server.automation_target(db, 1, VISITOR)
+            self.assertEqual(server.RUNNER.reach_out(target)["post"], "at://stranger/post/one")
+            self.assertIsNone(server.RUNNER.reach_out(target))  # The first post stays used.
+            feed.append({"uri": "at://stranger/post/two", "date": "today", "text": "お花 #結城めもり",
+                         "createdAt": time.time() - 30})
+            # A reply arrived before the new tagged post, so the reply-wait guard also permits a message.
+            self.bsky.add_convo("c1", STRANGER_DID, "stranger.test",
+                                [(CHAR_DID, "気をつけて帰ってね"), (STRANGER_DID, "ありがとう")])
+            self.assertEqual(server.RUNNER.reach_out(target)["post"], "at://stranger/post/two")
+            self.assertIsNone(server.RUNNER.reach_out(target))
+            status, _ = self.save(auto_reply=False, auto_reach_out=True, reach_out_cooldown_enabled=True)
+            self.assertEqual(status, 200)
+            with server.database() as db:
+                target = server.automation_target(db, 1, VISITOR)
+            feed.append({"uri": "at://stranger/post/three", "date": "today", "text": "空 #結城めもり",
+                         "createdAt": time.time()})
+            self.assertIsNone(server.RUNNER.reach_out(target))  # Re-enabling restores the 24-hour limit.
+        self.assertEqual(len(self.bsky.sent), 2)
+
+    def test_disabling_cooldown_keeps_reply_wait_and_busy_guards(self):
+        self.save(auto_reply=False, auto_reach_out=True, reach_out_mode="hashtag",
+                  reach_out_hashtag="結城めもり", reach_out_cooldown_enabled=False)
+        self.story_day(datetime.datetime.now())
+        self.bsky.add_convo("c1", STRANGER_DID, "stranger.test",
+                            [(STRANGER_DID, "こんにちは"), (CHAR_DID, "またね")])
+        feed = [{"uri": "at://stranger/post/new", "date": "today", "text": "猫 #結城めもり",
+                 "createdAt": time.time()}]
+        with patch.object(server, "character_posts", return_value=feed), \
+             patch.object(server, "oauth_call", side_effect=self.bsky), \
+             patch.object(server, "call_ai", side_effect=self.reach_ai([])) as ai:
+            with server.database() as db:
+                target = server.automation_target(db, 1, VISITOR)
+            self.assertIsNone(server.RUNNER.reach_out(target))
+        self.assertEqual(self.bsky.sent, [])
+        ai.assert_not_called()
+        self.save(auto_reply=False, auto_reach_out=True, reach_out_wait_for_reply=False)
+        today = server.RUNNER.load_day(1, datetime.date.today())
+        today["blocks"][0]["status"] = "busy"
+        server.RUNNER.save_day(1, today)
+        with patch.object(server, "oauth_call", side_effect=self.bsky), \
+             patch.object(server.RUNNER, "reach_out") as reach:
+            server.RUNNER.tick()
+        reach.assert_not_called()
+
+    def test_disabling_cooldown_and_reply_wait_reacts_to_each_new_post_after_own_message(self):
+        self.save(auto_reply=False, auto_reach_out=True, reach_out_mode="hashtag",
+                  reach_out_hashtag="結城めもり", reach_out_cooldown_enabled=False)
+        self.story_day(datetime.datetime.now())
+        self.bsky.add_convo("c1", STRANGER_DID, "stranger.test",
+                            [(STRANGER_DID, "こんにちは"), (CHAR_DID, "またね")])
+        feed = [{"uri": "at://stranger/post/one", "date": "today", "text": "猫 #結城めもり",
+                 "createdAt": time.time() - 60}]
+        with patch.object(server, "character_posts", return_value=feed), \
+             patch.object(server, "oauth_call", side_effect=self.bsky), \
+             patch.object(server, "call_ai", side_effect=self.reach_ai([])):
+            with server.database() as db:
+                target = server.automation_target(db, 1, VISITOR)
+            self.assertIsNone(server.RUNNER.reach_out(target))  # Reply waiting is independently enabled.
+            status, _ = self.save(auto_reply=False, auto_reach_out=True, reach_out_wait_for_reply=False)
+            self.assertEqual(status, 200)
+            with server.database() as db:
+                target = server.automation_target(db, 1, VISITOR)
+            self.assertEqual(server.RUNNER.reach_out(target)["post"], "at://stranger/post/one")
+            self.assertIsNone(server.RUNNER.reach_out(target))  # The same post cannot trigger again.
+            feed.append({"uri": "at://stranger/post/two", "date": "today", "text": "空 #結城めもり",
+                         "createdAt": time.time() - 30})
+            self.assertEqual(server.RUNNER.reach_out(target)["post"], "at://stranger/post/two")
+            status, _ = self.save(auto_reply=False, auto_reach_out=True, reach_out_wait_for_reply=True)
+            self.assertEqual(status, 200)
+            with server.database() as db:
+                target = server.automation_target(db, 1, VISITOR)
+            self.assertFalse(target["reach_out_cooldown_enabled"])
+            feed.append({"uri": "at://stranger/post/three", "date": "today", "text": "お花 #結城めもり",
+                         "createdAt": time.time()})
+            self.assertIsNone(server.RUNNER.reach_out(target))  # Restoring reply waiting works without cooldown.
+        self.assertEqual(len(self.bsky.sent), 2)
 
     def test_post_due_posts_latest_and_skips_stale_times(self):
         self.save(auto_reply=False, auto_post=True, post_times="15:00, 09:00,11:50")

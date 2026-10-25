@@ -97,6 +97,24 @@ class SharedSettingsTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             shared_settings.import_sql(self.pc("target"), "DELETE FROM characters;")
 
+    def test_reach_out_conditions_are_shared_but_enabling_is_local(self):
+        source = self.source()
+        source.execute("""UPDATE character_automation SET auto_reach_out=1,
+                          reach_out_mode='hashtag',reach_out_hashtag='結城めもり',
+                          reach_out_cooldown_enabled=0,reach_out_wait_for_reply=0 WHERE character_id=1""")
+        sql = shared_settings.export_sql(source)
+        target = self.pc("target")
+        shared_settings.import_sql(target, sql)
+        row = target.execute("SELECT a.* FROM character_automation a JOIN characters c ON c.id=a.character_id WHERE c.handle='memori.test'").fetchone()
+        self.assertEqual((row["reach_out_mode"], row["reach_out_hashtag"], row["auto_reach_out"]),
+                         ("hashtag", "結城めもり", 0))
+        self.assertEqual((row["reach_out_cooldown_enabled"], row["reach_out_wait_for_reply"]), (0, 0))
+        target.execute("UPDATE character_automation SET auto_reach_out=1 WHERE character_id=?", (row["character_id"],))
+        target.commit()
+        shared_settings.import_sql(target, sql)
+        self.assertEqual(target.execute("SELECT auto_reach_out FROM character_automation WHERE character_id=?",
+                                        (row["character_id"],)).fetchone()[0], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

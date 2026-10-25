@@ -197,6 +197,15 @@ class ServerTest(ServerFixture):
             self.assertEqual(server.xrpc(server.APPVIEW, "app.bsky.actor.getProfile", actor="example.bsky.social"), profile)
         self.assertEqual(oauth.call_args.args[0]["op"], "publicGet")
 
+    def test_public_appview_reports_blocked_network_without_retrying_through_node(self):
+        blocked = PermissionError(13, 'blocked')
+        with patch.object(server.urllib.request, "build_opener") as opener, \
+             patch.object(server, "oauth_call") as oauth:
+            opener.return_value.open.side_effect = urllib.error.URLError(blocked)
+            with self.assertRaisesRegex(RuntimeError, "外部通信.*ブロック"):
+                server.xrpc(server.APPVIEW, "app.bsky.actor.getProfile", actor="example.bsky.social")
+        oauth.assert_not_called()
+
     def test_character_management_and_separate_game_history(self):
         avatar = "https://cdn.bsky.app/img/avatar/example"
         with patch.object(server, "xrpc", return_value={"did": CHAR_DID, "handle": "hoshino.bsky.social", "displayName": "星野 灯", "avatar": avatar}):

@@ -5,13 +5,15 @@ from __future__ import annotations
 
 import http.cookies
 import http.server
+import atexit
 import base64
 import datetime
+import errno
 import hashlib
 import json
 import os
 import re
-import select
+import queue
 import secrets
 import socket
 import ssl
@@ -93,6 +95,7 @@ DB_LOCK = threading.RLock()
 CHAT_LOCK = threading.RLock()
 OAUTH_LOCK = threading.RLock()
 OAUTH_PROCESS = None
+OAUTH_RESPONSE_TIMEOUT = 60
 SESSION_RE = re.compile(r"^[a-f0-9]{64}$")
 DID_RE = re.compile(r"^did:(plc:[a-z2-7]+|web:[A-Za-z0-9._:%-]+)$")
 SECRET_LEVELS = (25, 50, 75, 100)
@@ -122,6 +125,10 @@ MIGRATED_COLUMNS = (
     ("character_automation", "story_times", f"TEXT NOT NULL DEFAULT '{automation.DEFAULT_STORY_TIMES}'"),
     ("character_automation", "story_image_prompt", "TEXT NOT NULL DEFAULT ''"),
     ("character_automation", "auto_reach_out", "INTEGER NOT NULL DEFAULT 0"),
+    ("character_automation", "reach_out_mode", "TEXT NOT NULL DEFAULT 'close'"),
+    ("character_automation", "reach_out_hashtag", "TEXT NOT NULL DEFAULT '結城めもり'"),
+    ("character_automation", "reach_out_cooldown_enabled", "INTEGER NOT NULL DEFAULT 1"),
+    ("character_automation", "reach_out_wait_for_reply", "INTEGER NOT NULL DEFAULT 1"),
 )
 UNLOCK_REQUIRED_BY_DEFAULT = True  # Characters without automation settings are locked until DMs open them.
 POSTS_CACHE = {}
@@ -355,10 +362,35 @@ def init_db():
     os.chmod(DB_PATH, 0o600)
 
 
+def stop_oauth_process():
+    """Discard the bridge and its pipes so a failed exchange cannot affect the next request."""
+    global OAUTH_PROCESS
+    with OAUTH_LOCK:
+        process, OAUTH_PROCESS = OAUTH_PROCESS, None
+        if process is None:
+            return
+        try:
+            if process.poll() is None:
+                process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+        finally:
+            for stream in (process.stdin, process.stdout):
+                if stream:
+                    stream.close()
+
+
+atexit.register(stop_oauth_process)
+
+
 def oauth_call(command):
     global OAUTH_PROCESS
     with OAUTH_LOCK:
         if OAUTH_PROCESS is None or OAUTH_PROCESS.poll() is not None:
+            stop_oauth_process()
             if not (ROOT / "node_modules" / "@atproto" / "oauth-client-node").exists():
                 raise RuntimeError("OAuth 用ライブラリがありません。先に npm install を実行してください")
             try:
@@ -371,23 +403,37 @@ def oauth_call(command):
             OAUTH_PROCESS = subprocess.Popen(
                 ["node", str(ROOT / "oauth_bridge.mjs")], cwd=ROOT,
                 env={**os.environ, "PORT": str(PORT)}, stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1,
             )
+        replies = queue.Queue(maxsize=1)
+
+        def read_reply(stream):
+            try:
+                replies.put(stream.readline())
+            except (OSError, UnicodeError, ValueError) as exc:
+                replies.put(exc)
+
         try:
             OAUTH_PROCESS.stdin.write(json.dumps(command, ensure_ascii=False) + "\n")
             OAUTH_PROCESS.stdin.flush()
-            if not select.select([OAUTH_PROCESS.stdout], [], [], 60)[0]:
-                OAUTH_PROCESS.kill()
-                OAUTH_PROCESS = None
-                raise RuntimeError("AT Protocol OAuth が時間内に応答しませんでした")
-            line = OAUTH_PROCESS.stdout.readline()
+            threading.Thread(target=read_reply, args=(OAUTH_PROCESS.stdout,), daemon=True).start()
+            try:
+                line = replies.get(timeout=OAUTH_RESPONSE_TIMEOUT)
+            except queue.Empty as exc:
+                stop_oauth_process()
+                raise RuntimeError("AT Protocol OAuth が時間内に応答しませんでした。もう一度接続してください") from exc
+            if isinstance(line, Exception):
+                raise line
             if not line:
-                raise RuntimeError("OAuth プロセスが停止しました。Node.js の依存関係を確認してください")
+                raise OSError("OAuth bridge exited without a response")
             response = json.loads(line)
-        except (BrokenPipeError, OSError, json.JSONDecodeError) as exc:
-            raise RuntimeError("OAuth プロセスに接続できません") from exc
+            if not isinstance(response, dict) or not ("error" in response or "result" in response):
+                raise ValueError("Invalid OAuth bridge response")
+        except (OSError, UnicodeError, ValueError) as exc:
+            stop_oauth_process()
+            raise RuntimeError("OAuth プロセスとの通信に失敗しました。Node.js の依存関係を確認し、もう一度接続してください") from exc
         if "error" in response:
-            raise RuntimeError("AT Protocol OAuth: " + response["error"][:300])
+            raise RuntimeError("AT Protocol OAuth: " + str(response["error"])[:300])
         return response["result"]
 
 
@@ -527,19 +573,26 @@ def after_reset(messages, reset_at):
     return kept
 
 
-def reach_out_candidates(db, selected, partner_did=None):
-    """People close enough for the character to message first (なかよし or closer, or lovers), most recent first."""
+def reach_out_candidates(db, selected, partner_did=None, mode=automation.DEFAULT_REACH_OUT_MODE, partners=None):
+    """Close relationships, or verified existing DM partners regardless of affinity in hashtag mode."""
     rows = db.execute("SELECT * FROM dm_relationships WHERE character_id=?" + (" AND partner_did=?" if partner_did else "")
                       + " ORDER BY updated_at DESC", (selected, partner_did) if partner_did else (selected,)).fetchall()
+    by_did = {row["partner_did"]: row for row in rows}
+    people = (partners or []) if mode == "hashtag" else [
+        {"did": row["partner_did"], "handle": row["partner_handle"]} for row in rows]
     result = []
-    for row in rows:
-        scores = {axis: relationship.round1(row[axis]) for axis in relationship.AXES}
-        lover = bool(row["lover_at"])
-        if not lover and relationship.stage_index(scores) < automation.REACH_OUT_STAGE:
+    for person in people:
+        if partner_did and person["did"] != partner_did:
+            continue
+        row = by_did.get(person["did"])
+        scores = {axis: relationship.round1(row[axis]) for axis in relationship.AXES} if row else dict(relationship.INITIAL)
+        lover = bool(row and row["lover_at"])
+        if mode != "hashtag" and not lover and relationship.stage_index(scores) < automation.REACH_OUT_STAGE:
             continue
         sent = db.execute("SELECT post_uri,sent_at FROM dm_reach_outs WHERE character_id=? AND partner_did=?",
-                          (selected, row["partner_did"])).fetchall()
-        result.append({"did": row["partner_did"], "handle": row["partner_handle"], "scores": scores, "lover": lover,
+                          (selected, person["did"])).fetchall()
+        result.append({"did": person["did"], "handle": person.get("handle") or (row["partner_handle"] if row else ""),
+                       "scores": scores, "lover": lover,
                        "usedPosts": {item["post_uri"] for item in sent}, "lastReachOut": max((item["sent_at"] for item in sent), default=0.0)})
     return result
 
@@ -650,6 +703,9 @@ def public_json(url: str):
         detail = exc.read(300).decode("utf-8", "replace")
         raise UpstreamError(exc.code, detail) from exc
     except (urllib.error.URLError, TimeoutError) as exc:
+        reason = getattr(exc, "reason", exc)
+        if isinstance(reason, OSError) and reason.errno in (errno.EACCES, errno.EPERM):
+            raise RuntimeError("外部通信が実行環境またはファイアウォールでブロックされています。通常のターミナルからサーバーを起動し直してください") from exc
         if url.startswith(APPVIEW + "/xrpc/app.bsky."):
             try:
                 return oauth_call({"op": "publicGet", "url": url})["data"]
@@ -834,23 +890,46 @@ def post_time(value):
         return 0.0
 
 
-def character_posts(did):
-    """Recent public posts of an account (the character or a DM partner). Cached briefly."""
-    cached = POSTS_CACHE.get(did)
-    if cached and time.time() - cached[0] < POSTS_TTL:
+def character_posts(did, *, all_recent=False):
+    """Recent public posts, cached briefly. Tag triggers also scan replies and older pages within three days."""
+    cache_key = (did, "all_recent") if all_recent else did
+    cached = POSTS_CACHE.get(cache_key)
+    if cached and time.time() - cached[0] < (automation.POST_CHECK if all_recent else POSTS_TTL):
         return cached[1]
     try:
-        feed = xrpc(APPVIEW, "app.bsky.feed.getAuthorFeed", actor=did, limit=10, filter="posts_no_replies").get("feed", [])
+        feed, cursor, seen = [], "", set()
+        cutoff = time.time() - automation.REACH_OUT_POST_AGE
+        while True:
+            params = {"actor": did, "limit": 100 if all_recent else 10,
+                      "filter": "posts_with_replies" if all_recent else "posts_no_replies"}
+            if cursor:
+                params["cursor"] = cursor
+            page = xrpc(APPVIEW, "app.bsky.feed.getAuthorFeed", **params)
+            items = page.get("feed", [])
+            feed.extend(items)
+            cursor = page.get("cursor")
+            if not all_recent or not cursor or cursor in seen or not items:
+                break
+            # Feed order follows indexing/repost time, rather than a pinned or backdated post's createdAt.
+            last = items[-1]
+            last_post = last.get("post") or {}
+            indexed_at = post_time((last.get("reason") or {}).get("indexedAt") or last_post.get("indexedAt")
+                                   or (last_post.get("record") or {}).get("createdAt"))
+            if indexed_at and indexed_at < cutoff:
+                break
+            seen.add(cursor)
     except Exception as exc:  # Evaluation still works without posts.
         print(f"Character posts unavailable: {type(exc).__name__}", file=sys.stderr)
         return cached[1] if cached else []
     posts = [{"uri": item["post"].get("uri", ""), "date": str(item["post"]["record"].get("createdAt", ""))[:16].replace("T", " "),
               "text": item["post"]["record"]["text"],
+              "tags": item["post"]["record"].get("tags") or [],
+              "facets": item["post"]["record"].get("facets") or [],
               "story": automation.STORY_TAG in (item["post"]["record"].get("tags") or []),
               "createdAt": post_time(item["post"]["record"].get("createdAt"))}
              for item in feed if isinstance(item.get("post", {}).get("record", {}).get("text"), str)
              and item["post"].get("author", {}).get("did") == did]
-    POSTS_CACHE[did] = (time.time(), posts)
+    POSTS_CACHE[cache_key] = (time.time(), posts)
     return posts
 
 
@@ -1564,8 +1643,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 with DB_LOCK, database() as db:
                     target = automation_target(db, selected, visitor)
                 partner_did = str(body.get("did", "")).strip()
+                if not DID_RE.fullmatch(partner_did):
+                    raise ValueError("話しかける相手のDIDが正しくありません")
                 record = RUNNER.reach_out(target, partner_did=partner_did)
                 if record is None:
+                    if target["reach_out_mode"] == "hashtag":
+                        raise ValueError(f"話しかけられません。DMしたことのある相手で、まだ話題にしていない直近3日以内の #{target['reach_out_hashtag']} 付き投稿が必要です")
                     raise ValueError("話しかけられません。なかよし以上の相手で、まだ話題にしていない直近3日以内の投稿が必要です")
                 return self.send_json(200, {"record": record, "relationships": dm_relationships_json(selected)}, cookie)
             relationship_post = re.fullmatch(r"/api/characters/(\d+)/relationship(?:/(delete|context))?", self.path)
@@ -1616,7 +1699,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         "story_times": automation.parse_times(body.get("story_times", automation.DEFAULT_STORY_TIMES), "ストーリーの時刻"),
                         "story_image_prompt": str(body.get("story_image_prompt", "")).strip(),
                         "auto_reach_out": body.get("auto_reach_out") is True,
+                        "reach_out_mode": body.get("reach_out_mode", target["reach_out_mode"]),
+                        "reach_out_hashtag": body.get("reach_out_hashtag", target["reach_out_hashtag"]),
+                        "reach_out_cooldown_enabled": body.get("reach_out_cooldown_enabled", target["reach_out_cooldown_enabled"]),
+                        "reach_out_wait_for_reply": body.get("reach_out_wait_for_reply", target["reach_out_wait_for_reply"]),
                     }
+                    for key, label in (("reach_out_cooldown_enabled", "24時間に1回までの制限"),
+                                       ("reach_out_wait_for_reply", "相手の返信を待つ設定")):
+                        if type(settings[key]) is not bool:
+                            raise ValueError(f"{label}はON/OFFで指定してください")
+                    if settings["reach_out_mode"] not in automation.REACH_OUT_MODES:
+                        raise ValueError("話しかける条件は「なかよし以上」か「指定ハッシュタグ付き投稿」を選んでください")
+                    try:
+                        settings["reach_out_hashtag"] = automation.parse_reach_out_hashtag(settings["reach_out_hashtag"])
+                    except ValueError:
+                        if settings["reach_out_mode"] == "hashtag":
+                            raise
+                        settings["reach_out_hashtag"] = target["reach_out_hashtag"] or automation.DEFAULT_REACH_OUT_HASHTAG
                     if len(settings["story_image_prompt"]) > automation.STORY_IMAGE_PROMPT_LIMIT:
                         raise ValueError(f"ストーリー画像の指示は{automation.STORY_IMAGE_PROMPT_LIMIT:,}文字までです")
                     if type(settings["unlock_score"]) is not int or not 1 <= settings["unlock_score"] <= 100:
@@ -1627,18 +1726,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     settings["schedule_base"] = json.dumps(base, ensure_ascii=False, indent=2)
                     with DB_LOCK, database() as db:
                         db.execute("""INSERT INTO character_automation(character_id,auto_reply,auto_post,post_prompt,extra_persona,schedule_base,
-                                      require_unlock,unlock_score,post_times,auto_story,story_times,story_image_prompt,auto_reach_out,updated_at)
-                                      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(character_id) DO UPDATE SET auto_reply=excluded.auto_reply,
+                                      require_unlock,unlock_score,post_times,auto_story,story_times,story_image_prompt,auto_reach_out,
+                                      reach_out_mode,reach_out_hashtag,reach_out_cooldown_enabled,reach_out_wait_for_reply,updated_at)
+                                      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(character_id) DO UPDATE SET auto_reply=excluded.auto_reply,
                                       auto_post=excluded.auto_post,post_prompt=excluded.post_prompt,extra_persona=excluded.extra_persona,
                                       schedule_base=excluded.schedule_base,require_unlock=excluded.require_unlock,
                                       unlock_score=excluded.unlock_score,post_times=excluded.post_times,auto_story=excluded.auto_story,
                                       story_times=excluded.story_times,story_image_prompt=excluded.story_image_prompt,
                                       auto_reach_out=excluded.auto_reach_out,
+                                      reach_out_mode=excluded.reach_out_mode,reach_out_hashtag=excluded.reach_out_hashtag,
+                                      reach_out_cooldown_enabled=excluded.reach_out_cooldown_enabled,
+                                      reach_out_wait_for_reply=excluded.reach_out_wait_for_reply,
                                       updated_at=excluded.updated_at""",
                                    (selected, int(settings["auto_reply"]), int(settings["auto_post"]), settings["post_prompt"],
                                     settings["extra_persona"], settings["schedule_base"], int(settings["require_unlock"]),
                                     settings["unlock_score"], ",".join(settings["post_times"]), int(settings["auto_story"]),
                                     ",".join(settings["story_times"]), settings["story_image_prompt"], int(settings["auto_reach_out"]),
+                                    settings["reach_out_mode"], settings["reach_out_hashtag"],
+                                    int(settings["reach_out_cooldown_enabled"]), int(settings["reach_out_wait_for_reply"]),
                                     int(time.time())))
                     return self.send_json(200, {"settings": settings}, cookie)
                 if action == "schedule":
@@ -1804,8 +1909,8 @@ RUNNER = automation.Runner(sys.modules[__name__])
 
 def main():
     init_db()
-    threading.Thread(target=RUNNER.run_forever, name="automation", daemon=True).start()
     server = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    threading.Thread(target=RUNNER.run_forever, name="automation", daemon=True).start()
     print(f"Local: http://127.0.0.1:{PORT}", flush=True)
     try:
         server.serve_forever()
@@ -1813,6 +1918,7 @@ def main():
         pass
     finally:
         server.server_close()
+        stop_oauth_process()
 
 
 if __name__ == "__main__":

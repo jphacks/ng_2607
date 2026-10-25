@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const state = { characters: [], selectedId: null, postCursor: null, convoCursor: null, messageCursor: null, convoId: null };
+const state = { characters: [], selectedId: null, postCursor: null, convoCursor: null, messageCursor: null, convoId: null, connecting: false };
 async function api(path, options = {}) { const response = await fetch(path, { credentials: 'same-origin', ...options }); const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`); return data; }
 function post(path, body) { return api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); }
 const SECRET_LEVELS = [25, 50, 75, 100];
@@ -61,7 +61,7 @@ $('base-image-delete').addEventListener('click', async () => {
 function readSecrets() { return SECRET_LEVELS.map(level => ({ level, title: $(`secret-title-${level}`).value, content: $(`secret-content-${level}`).value })); }
 async function loadSecrets(id) { fillSecrets(); try { const { secrets } = await api(`/api/characters/${id}/secrets`); if (state.selectedId === id) fillSecrets(secrets); } catch (error) { if (state.selectedId === id) notice(error.message, true); } }
 function notice(message, error = false) { $('editor-notice').textContent = message; $('editor-notice').classList.toggle('error', error); }
-function updateConnectButton() { $('connect-character').disabled = !$('character-handle-input').value.trim(); }
+function updateConnectButton() { $('connect-character').disabled = state.connecting || !$('character-handle-input').value.trim(); }
 function renderIcon(url, name = '') { const target = $('icon-preview'); target.replaceChildren(); if (url) { const img = document.createElement('img'); img.src = url; img.alt = ''; target.append(img); } else target.textContent = name.slice(0, 1) || '✦'; }
 function renderIdentity(name = '表示名を取得します', url = null) { $('character-name-display').textContent = name; renderIcon(url, name === '表示名を取得します' ? '' : name); }
 function renderList() {
@@ -243,7 +243,9 @@ function relationshipEditor(item) {
   });
   const reach = textNode('button', '今すぐ話しかける (テスト)', 'text-button'); reach.type = 'button';
   reach.addEventListener('click', () => {
-    if (!confirm(`@${item.handle || item.did} の直近の投稿を話題に、キャラから実際にDMを送りますか？ (1日1回の制限は無視します)`)) return;
+    const settings = state.automationSettings;
+    const condition = settings?.reach_out_mode === 'hashtag' ? `#${settings.reach_out_hashtag || '結城めもり'} 付き` : 'なかよし以上の相手の';
+    if (!confirm(`保存済みの条件「${condition}投稿」で、@${item.handle || item.did} にキャラから実際にDMを送りますか？\n空き時間・24時間の間隔・返信待ちの制限は適用しません。`)) return;
     automationAction(reach, '話しかけるDMを作っています…', async id => {
       const { record, relationships } = await post(`/api/characters/${id}/relationship/reach-out`, { did: item.did });
       if (state.selectedId !== id) return;
@@ -280,7 +282,24 @@ $('add-relationship').addEventListener('click', () => {
     renderRelationships(relationships, state.automationSettings); automationNotice(`@${handle} を初期値で追加しました。「ステータスを編集」で値を変えられます。`);
   });
 });
-function renderAutomationState(settings) { $('automation-state').textContent = `自動返信 ${settings.auto_reply ? 'ON' : 'OFF'} · 自動投稿 ${settings.auto_post ? 'ON' : 'OFF'} · ストーリー ${settings.auto_story ? 'ON' : 'OFF'} · 話しかけ ${settings.auto_reach_out ? 'ON' : 'OFF'}`; }
+function renderAutomationState(settings) { $('automation-state').textContent = `自動返信 ${settings.auto_reply ? 'ON' : 'OFF'} · 自動投稿 ${settings.auto_post ? 'ON' : 'OFF'} · ストーリー ${settings.auto_story ? 'ON' : 'OFF'} · 話しかけ ${settings.auto_reach_out ? 'ON' : 'OFF'} (${settings.reach_out_mode === 'hashtag' ? '#' + (settings.reach_out_hashtag || '結城めもり') : 'なかよし以上'}・24時間制限${settings.reach_out_cooldown_enabled === false ? 'なし' : 'あり'}・返信待ち${settings.reach_out_wait_for_reply === false ? 'なし' : 'あり'})`; }
+function updateReachOutCondition() {
+  const hashtagMode = $('reach-out-mode').value === 'hashtag';
+  $('reach-out-hashtag').disabled = !hashtagMode;
+  $('reach-out-hashtag').required = hashtagMode;
+  $('reach-out-condition-note').textContent = hashtagMode
+    ? 'これまでDMした相手の、指定タグが付いた投稿だけを対象にします。好感度の制限はありません。'
+    : '総合好感度50以上、または恋人の相手を対象にします。';
+}
+function fillReachOutCondition(settings) {
+  $('reach-out-mode').value = settings.reach_out_mode || 'close';
+  $('reach-out-hashtag').value = '#' + (settings.reach_out_hashtag || '結城めもり');
+  $('reach-out-cooldown-enabled').checked = settings.reach_out_cooldown_enabled !== false;
+  $('reach-out-wait-for-reply').checked = settings.reach_out_wait_for_reply !== false;
+  updateReachOutCondition();
+}
+$('reach-out-mode').addEventListener('change', updateReachOutCondition);
+updateReachOutCondition();
 function renderSchedule(today, now, settings = state.automationSettings) {
   const target = $('today-schedule'); target.replaceChildren();
   if (!today) { target.append(textNode('p', '今日の予定はまだありません。自動運用を有効にすると最初の確認時に作られます。「作る・作り直す」で今すぐ作れます (AIを使います)。', 'schedule-meta')); return; }
@@ -319,6 +338,7 @@ async function loadAutomation(character) {
     $('extra-persona').value = settings.extra_persona; $('post-prompt').value = settings.post_prompt; $('schedule-base').value = settings.schedule_base;
     $('require-unlock').checked = settings.require_unlock; $('unlock-score').value = settings.unlock_score;
     $('post-times').value = settings.post_times.join(', '); $('auto-story').checked = settings.auto_story; $('auto-reach-out').checked = settings.auto_reach_out; $('story-times').value = settings.story_times.join(', '); $('story-image-prompt').value = settings.story_image_prompt;
+    fillReachOutCondition(settings);
     state.automationSettings = settings; state.memoryKinds = data.memoryKinds; state.initialAxes = data.initialAxes; $('story-preview').classList.add('hidden');
     renderAutomationState(settings); renderSchedule(data.today, data.now); renderRelationships(data.relationships, settings);
     const missing = Object.entries(data.missingScopes).filter(([, scopes]) => scopes.length).map(([kind]) => SCOPE_LABELS[kind]);
@@ -342,9 +362,10 @@ async function automationAction(button, message, run) {
 $('automation-form').addEventListener('submit', event => {
   event.preventDefault();
   automationAction($('save-automation'), '自動運用の設定を保存しています…', async id => {
-    const { settings } = await post(`/api/characters/${id}/automation`, { auto_reply: $('auto-reply').checked, auto_post: $('auto-post').checked, extra_persona: $('extra-persona').value, post_prompt: $('post-prompt').value, schedule_base: $('schedule-base').value, require_unlock: $('require-unlock').checked, unlock_score: Number($('unlock-score').value), post_times: $('post-times').value, auto_story: $('auto-story').checked, auto_reach_out: $('auto-reach-out').checked, story_times: $('story-times').value, story_image_prompt: $('story-image-prompt').value });
+    const { settings } = await post(`/api/characters/${id}/automation`, { auto_reply: $('auto-reply').checked, auto_post: $('auto-post').checked, extra_persona: $('extra-persona').value, post_prompt: $('post-prompt').value, schedule_base: $('schedule-base').value, require_unlock: $('require-unlock').checked, unlock_score: Number($('unlock-score').value), post_times: $('post-times').value, auto_story: $('auto-story').checked, auto_reach_out: $('auto-reach-out').checked, reach_out_mode: $('reach-out-mode').value, reach_out_hashtag: $('reach-out-hashtag').value, reach_out_cooldown_enabled: $('reach-out-cooldown-enabled').checked, reach_out_wait_for_reply: $('reach-out-wait-for-reply').checked, story_times: $('story-times').value, story_image_prompt: $('story-image-prompt').value });
     if (state.selectedId !== id) return;
     $('schedule-base').value = settings.schedule_base; $('post-times').value = settings.post_times.join(', '); $('story-times').value = settings.story_times.join(', ');
+    fillReachOutCondition(settings);
     state.automationSettings = settings; renderAutomationState(settings);
     automationNotice('自動運用の設定を保存しました。数秒以内にバックグラウンドの処理に反映されます。');
   });
@@ -416,25 +437,30 @@ $('send-post').addEventListener('click', () => {
 $('manual-post').addEventListener('input', () => { $('manual-length').textContent = `${$('manual-post').value.length} / 300`; });
 
 $('new-character').addEventListener('click', newCharacter);
-async function saveCharacter() {
+async function saveCharacter({ refresh = true } = {}) {
   const data = await post('/api/characters/save', { id: state.selectedId, profile: $('character-profile-input').value, handle: $('character-handle-input').value, relationshipWeights: $('relationship-weights').value, relationshipStages: readStages(), secrets: readSecrets(), publicProfile: Object.fromEntries(['intro','personality','likes','basics','details','memories'].map(key => [key, $('public-'+key).value])) });
   const index = state.characters.findIndex(item => item.id === data.character.id);
   if (index >= 0) state.characters[index] = data.character; else state.characters.push(data.character);
-  select(data.character.id);
+  if (refresh) select(data.character.id);
+  else state.selectedId = data.character.id;
   return data.character;
 }
 $('connect-character').addEventListener('click', async () => {
-  if (!$('character-form').reportValidity()) return;
-  const button = $('connect-character'); button.disabled = true;
+  if (state.connecting || !$('character-form').reportValidity()) return;
+  state.connecting = true; updateConnectButton();
+  let step = 'save';
   try {
     notice('編集内容を保存しています…');
-    const character = await saveCharacter();
-    button.disabled = true;
+    const character = await saveCharacter({ refresh: false });
+    step = 'oauth';
     if (!character.atDid) throw new Error('ハンドルを確認できません。入力内容を確認してください。');
     notice('OAuth認証画面を準備しています…');
     const { url } = await post('/api/oauth/start', { role: 'character', characterId: character.id });
     location.assign(url);
-  } catch (error) { notice(error.message, true); updateConnectButton(); }
+  } catch (error) {
+    notice(`${step === 'save' ? '保存に失敗しました' : '保存は完了しましたが、OAuth認証の開始に失敗しました'}。${error.message}`, true);
+    state.connecting = false; updateConnectButton();
+  }
 });
 $('disconnect-character').addEventListener('click', async () => { try { await post('/api/characters/disconnect', { id: state.selectedId }); await load(state.selectedId); notice('OAuth接続を解除しました。'); } catch (error) { notice(error.message, true); } });
 $('posts-more').addEventListener('click', () => loadPosts(state.selectedId));
