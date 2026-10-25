@@ -293,7 +293,6 @@ STAGE_MINIMUMS = (0, 25, 50, 75)
 LOVER = len(STAGE_MINIMUMS)  # Index of the lovers' behaviour in the stage list.
 CONFESSION = "confess_sincerely"
 CONFESSION_SCORE = 0.6  # A clear confession before the last stage, which is turned aside.
-POSSIBLE_CONFESSION_SCORE = 0.3  # At the last stage, the confession judge decides from here on.
 REJECTION_PENALTY = 20.0  # Each axis, so the overall score also drops by 20.
 STAGE_FIELDS = {"name": "段階の名前", "call": "相手の呼び方", "tone": "口調", "allowed": "してよいこと", "forbidden": "しないこと"}
 STAGE_FIELD_LIMIT = 300
@@ -370,14 +369,14 @@ def confession_ready(scores):
     return stage_index(scores) == LOVER - 1
 
 
-def confession_outcome(update, lover, requested=False):
+def confession_outcome(update, lover):
     """What a confession in this message leads to before any judging:
-    'judge' at the last stage (the confession judge decides), 'decline' before it, None otherwise.
-    requested: sent with the confession button, which always asks the judge at the last stage."""
+    'judge' for every message at the last stage (the confession judge reads the context and decides whether
+    it is a confession at all), 'decline' for a confession before it, None otherwise."""
     if lover:
         return None
     if confession_ready(update["after"]):
-        return "judge" if requested or confessed(update, POSSIBLE_CONFESSION_SCORE) else None
+        return "judge"
     return "decline" if confessed(update) else None
 
 

@@ -224,14 +224,32 @@ function relationshipEditor(item) {
   }));
   const reset = textNode('button', '関係をリセット', 'text-button danger-text'); reset.type = 'button';
   reset.addEventListener('click', () => {
-    if (!confirm(`@${item.handle || item.did} との好感度・解放状態・覚えていること・判定の記録をすべて消して、初対面に戻しますか？`)) return;
+    if (!confirm(`@${item.handle || item.did} との好感度・解放状態・覚えていること・判定の記録をすべて消して、初対面に戻しますか？\nこれまでのDMも AI に渡さなくなります (Bluesky のDMは残ります)。`)) return;
     automationAction(reset, '関係をリセットしています…', async id => {
       const { relationships } = await post(`/api/characters/${id}/relationship/delete`, { did: item.did });
       if (state.selectedId !== id) return;
       renderRelationships(relationships, state.automationSettings); automationNotice(`@${item.handle || item.did} との関係をリセットしました。`);
     });
   });
-  const actions = textNode('div', '', 'manual-actions'); actions.append(reset, save);
+  const context = textNode('button', '会話の文脈だけリセット', 'text-button'); context.type = 'button';
+  context.addEventListener('click', () => {
+    if (!confirm(`@${item.handle || item.did} とのこれまでのDMを、今後 AI に渡さないようにしますか？\n好感度・恋人・覚えていることはそのままです。Bluesky のDMは消えません。`)) return;
+    automationAction(context, '会話の文脈をリセットしています…', async id => {
+      const { relationships } = await post(`/api/characters/${id}/relationship/context`, { did: item.did });
+      if (state.selectedId !== id) return;
+      renderRelationships(relationships, state.automationSettings); automationNotice(`@${item.handle || item.did} とのこれまでのDMを、AI に渡さないようにしました。次の発言から新しい会話として扱います。`);
+    });
+  });
+  const reach = textNode('button', '今すぐ話しかける (テスト)', 'text-button'); reach.type = 'button';
+  reach.addEventListener('click', () => {
+    if (!confirm(`@${item.handle || item.did} の直近の投稿を話題に、キャラから実際にDMを送りますか？ (1日1回の制限は無視します)`)) return;
+    automationAction(reach, '話しかけるDMを作っています…', async id => {
+      const { record, relationships } = await post(`/api/characters/${id}/relationship/reach-out`, { did: item.did });
+      if (state.selectedId !== id) return;
+      renderRelationships(relationships, state.automationSettings); automationNotice(`@${record.handle} に話しかけました: ${record.text}`);
+    });
+  });
+  const actions = textNode('div', '', 'manual-actions'); const left = textNode('span', ''); left.append(reset, context, reach); actions.append(left, save);
   details.append(axes, unlock, loverLabel, textNode('small', '覚えていること (返信と好感度の判定に渡されます)'), memories, addMemory, actions);
   return details;
 }
@@ -245,7 +263,9 @@ function renderRelationships(relationships, settings) {
     const axes = Object.entries(item.axes).map(([axis, value]) => `${AXIS_NAMES[axis]} ${Math.round(value)}`).join(' · ');
     const delta = item.lastDelta ? ' ／ 前回 ' + Object.entries(item.lastDelta).map(([axis, value]) => `${AXIS_NAMES[axis]} ${value > 0 ? '+' : ''}${value}`).join(' ') : '';
     const stage = item.lover ? `💞 ${item.stage.name}` : `段階${item.stage.number}「${item.stage.name}」${item.stage.next ? ` (次は総合 ${item.stage.next})` : ' (告白されたら恋人に)'}`;
-    row.append(head, textNode('small', `${stage} · 総合 ${item.overall} / 解放 ${settings.unlock_score} · ${axes}${delta}`), relationshipEditor(item));
+    const context = item.contextResetAt ? ` ／ 文脈リセット ${new Date(item.contextResetAt * 1000).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} 以降のDMだけ使用` : '';
+    const reached = item.lastReachOutAt ? ` ／ 最後に話しかけた ${new Date(item.lastReachOutAt * 1000).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}` : '';
+    row.append(head, textNode('small', `${stage} · 総合 ${item.overall} / 解放 ${settings.unlock_score} · ${axes}${delta}${context}${reached}`), relationshipEditor(item));
     return row;
   }));
 }
@@ -259,7 +279,7 @@ $('add-relationship').addEventListener('click', () => {
     renderRelationships(relationships, state.automationSettings); automationNotice(`@${handle} を初期値で追加しました。「ステータスを編集」で値を変えられます。`);
   });
 });
-function renderAutomationState(settings) { $('automation-state').textContent = `自動返信 ${settings.auto_reply ? 'ON' : 'OFF'} · 自動投稿 ${settings.auto_post ? 'ON' : 'OFF'} · ストーリー ${settings.auto_story ? 'ON' : 'OFF'}`; }
+function renderAutomationState(settings) { $('automation-state').textContent = `自動返信 ${settings.auto_reply ? 'ON' : 'OFF'} · 自動投稿 ${settings.auto_post ? 'ON' : 'OFF'} · ストーリー ${settings.auto_story ? 'ON' : 'OFF'} · 話しかけ ${settings.auto_reach_out ? 'ON' : 'OFF'}`; }
 function renderSchedule(today, now, settings = state.automationSettings) {
   const target = $('today-schedule'); target.replaceChildren();
   if (!today) { target.append(textNode('p', '今日の予定はまだありません。自動運用を有効にすると最初の確認時に作られます。「作る・作り直す」で今すぐ作れます (AIを使います)。', 'schedule-meta')); return; }
@@ -279,7 +299,9 @@ function renderSchedule(today, now, settings = state.automationSettings) {
   const at = item => item.at ? new Date(item.at).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }) : item.time;
   for (const item of (today.post_log || []).filter(item => item.text)) lines.push(`${at(item)} ${POST_STATUS[item.status] || item.status}: ${item.text}`);
   for (const item of (today.story_log || []).filter(item => item.uri)) lines.push(`${at(item)} ストーリー${item.status === 'manual' ? ' (手動)' : ''}: ${item.text || '(一言なし)'} ／ 画像: ${item.imagePrompt?.split('\n')[0] || ''}`);
-  lines.push(`今日のDM自動返信: ${(today.dm_log || []).length}件` + ((today.dm_log || []).length ? ` (${[...new Set(today.dm_log.map(item => '@' + item.handle))].join('、')})` : ''));
+  const replies = (today.dm_log || []).filter(item => !item.reachOut), reaches = (today.dm_log || []).filter(item => item.reachOut);
+  lines.push(`今日のDM自動返信: ${replies.length}件` + (replies.length ? ` (${[...new Set(replies.map(item => '@' + item.handle))].join('、')})` : ''));
+  for (const item of reaches) lines.push(`${new Date(item.at).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })} 話しかけた @${item.handle}: ${item.text}`);
   target.append(textNode('p', lines.join('\n'), 'schedule-meta'));
 }
 async function loadAutomation(character) {
@@ -295,7 +317,7 @@ async function loadAutomation(character) {
     $('auto-reply').checked = settings.auto_reply; $('auto-post').checked = settings.auto_post;
     $('extra-persona').value = settings.extra_persona; $('post-prompt').value = settings.post_prompt; $('schedule-base').value = settings.schedule_base;
     $('require-unlock').checked = settings.require_unlock; $('unlock-score').value = settings.unlock_score;
-    $('post-times').value = settings.post_times.join(', '); $('auto-story').checked = settings.auto_story; $('story-times').value = settings.story_times.join(', '); $('story-image-prompt').value = settings.story_image_prompt;
+    $('post-times').value = settings.post_times.join(', '); $('auto-story').checked = settings.auto_story; $('auto-reach-out').checked = settings.auto_reach_out; $('story-times').value = settings.story_times.join(', '); $('story-image-prompt').value = settings.story_image_prompt;
     state.automationSettings = settings; state.memoryKinds = data.memoryKinds; state.initialAxes = data.initialAxes; $('story-preview').classList.add('hidden');
     renderAutomationState(settings); renderSchedule(data.today, data.now); renderRelationships(data.relationships, settings);
     const missing = Object.entries(data.missingScopes).filter(([, scopes]) => scopes.length).map(([kind]) => SCOPE_LABELS[kind]);
@@ -319,7 +341,7 @@ async function automationAction(button, message, run) {
 $('automation-form').addEventListener('submit', event => {
   event.preventDefault();
   automationAction($('save-automation'), '自動運用の設定を保存しています…', async id => {
-    const { settings } = await post(`/api/characters/${id}/automation`, { auto_reply: $('auto-reply').checked, auto_post: $('auto-post').checked, extra_persona: $('extra-persona').value, post_prompt: $('post-prompt').value, schedule_base: $('schedule-base').value, require_unlock: $('require-unlock').checked, unlock_score: Number($('unlock-score').value), post_times: $('post-times').value, auto_story: $('auto-story').checked, story_times: $('story-times').value, story_image_prompt: $('story-image-prompt').value });
+    const { settings } = await post(`/api/characters/${id}/automation`, { auto_reply: $('auto-reply').checked, auto_post: $('auto-post').checked, extra_persona: $('extra-persona').value, post_prompt: $('post-prompt').value, schedule_base: $('schedule-base').value, require_unlock: $('require-unlock').checked, unlock_score: Number($('unlock-score').value), post_times: $('post-times').value, auto_story: $('auto-story').checked, auto_reach_out: $('auto-reach-out').checked, story_times: $('story-times').value, story_image_prompt: $('story-image-prompt').value });
     if (state.selectedId !== id) return;
     $('schedule-base').value = settings.schedule_base; $('post-times').value = settings.post_times.join(', '); $('story-times').value = settings.story_times.join(', ');
     state.automationSettings = settings; renderAutomationState(settings);

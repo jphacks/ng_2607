@@ -32,11 +32,11 @@ class UIPreviewTest(unittest.TestCase):
         self.assertEqual(ready['previewRomance']['status'], 'ready')
         self.assertEqual(call('/api/game/chat', {'message': '普段の会話'})['game']['previewRomance']['status'], 'ready')
         call('/__debug/config', {'acceptConfession': False})
-        declined = call('/api/game/chat', {'message': '好きです', 'confession': True})['game']
+        declined = call('/api/game/chat', {'message': '好きです、付き合ってください'})['game']
         self.assertTrue(declined['previewRomance']['declined'])
         self.assertEqual(declined['previewRomance']['status'], 'ready')
         call('/__debug/config', {'acceptConfession': True})
-        accepted = call('/api/game/chat', {'message': '好きです', 'confession': True})['game']
+        accepted = call('/api/game/chat', {'message': '好きです、付き合ってください'})['game']
         self.assertEqual(accepted['previewRomance']['status'], 'lovers')
         call('/__debug/config', {'delta': -3})
         for _ in range(12):
