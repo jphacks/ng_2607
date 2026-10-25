@@ -254,7 +254,7 @@ INSERT INTO character_secrets(character_id,level,title,content) VALUES((SELECT i
 そう思って、ずっと開発を止めていたのだ。
 付き合い始めた直後、めもりは顔を真っ赤にしながら、その未完成のアプリを見せてくれる。
 「ねえ……これからは、ふたりで思い出を増やしていってもいい？」');
-INSERT INTO character_automation(character_id,auto_reply,auto_post,post_prompt,extra_persona,schedule_base,require_unlock,unlock_score,post_times,story_times,story_image_prompt,updated_at) SELECT (SELECT id FROM characters WHERE lower(handle)=lower('yukimemori.bsky.social') ORDER BY id LIMIT 1),0,0,'Bluesky に日々のつぶやきを投稿してください。
+INSERT INTO character_automation(character_id,auto_reply,auto_post,post_prompt,extra_persona,schedule_base,require_unlock,unlock_score,post_times,story_times,story_image_prompt,reach_out_mode,reach_out_hashtag,reach_out_cooldown_enabled,reach_out_wait_for_reply,updated_at) SELECT (SELECT id FROM characters WHERE lower(handle)=lower('yukimemori.bsky.social') ORDER BY id LIMIT 1),0,0,'Bluesky に日々のつぶやきを投稿してください。
 エンジニアの仕事のこと、ゲーム、甘いもの、猫、ガジェット、季節の話題など、日常のちょっとした気づきを、めもりらしい明るさとユーモアで書いてください。
 投稿する時刻に合った内容にしてください (朝なら朝の話題)。','あなたは「結城 めもり (ゆうき めもり)」という、AI で動く架空の女性エンジニア VTuber です。
 キャッチフレーズ:「みんなの思い出、ぜーんぶ保存しちゃうぞっ！」
@@ -439,6 +439,6 @@ INSERT INTO character_automation(character_id,auto_reply,auto_post,post_prompt,e
 ・コラージュ、分割画面、透かしは禁止
 ・日常の一瞬を切り取った自然な写真風にする
 【今回のシチュエーション】
-おまかせ。過去の画像とは異なる場面・構図にする。',strftime('%s','now') WHERE (SELECT id FROM characters WHERE lower(handle)=lower('yukimemori.bsky.social') ORDER BY id LIMIT 1) IS NOT NULL ON CONFLICT(character_id) DO UPDATE SET post_prompt=excluded.post_prompt,extra_persona=excluded.extra_persona,schedule_base=excluded.schedule_base,require_unlock=excluded.require_unlock,unlock_score=excluded.unlock_score,post_times=excluded.post_times,story_times=excluded.story_times,story_image_prompt=excluded.story_image_prompt,updated_at=excluded.updated_at;
+おまかせ。過去の画像とは異なる場面・構図にする。','close','結城めもり',1,1,strftime('%s','now') WHERE (SELECT id FROM characters WHERE lower(handle)=lower('yukimemori.bsky.social') ORDER BY id LIMIT 1) IS NOT NULL ON CONFLICT(character_id) DO UPDATE SET post_prompt=excluded.post_prompt,extra_persona=excluded.extra_persona,schedule_base=excluded.schedule_base,require_unlock=excluded.require_unlock,unlock_score=excluded.unlock_score,post_times=excluded.post_times,story_times=excluded.story_times,story_image_prompt=excluded.story_image_prompt,reach_out_mode=excluded.reach_out_mode,reach_out_hashtag=excluded.reach_out_hashtag,reach_out_cooldown_enabled=excluded.reach_out_cooldown_enabled,reach_out_wait_for_reply=excluded.reach_out_wait_for_reply,updated_at=excluded.updated_at;
 
 COMMIT;
